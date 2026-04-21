@@ -1912,7 +1912,7 @@ fn karatsuba_forward_2level(
     let y_sum = b.alloc_qubits(h + 1);
     karatsuba_half_sum_compute(b, &x_lo, &x_hi, &x_sum);
     karatsuba_half_sum_compute(b, &y_lo, &y_hi, &y_sum);
-    schoolbook_mul_into(b, &x_sum, &y_sum, z1_reg);
+    schoolbook_mul_into_addsub(b, &x_sum, &y_sum, z1_reg);
     karatsuba_half_sum_uncompute(b, &y_lo, &y_hi, &y_sum);
     karatsuba_half_sum_uncompute(b, &x_lo, &x_hi, &x_sum);
     b.free_vec(&y_sum);
@@ -1985,7 +1985,7 @@ fn karatsuba_inverse_2level(
     let y_sum = b.alloc_qubits(h + 1);
     karatsuba_half_sum_compute(b, &x_lo, &x_hi, &x_sum);
     karatsuba_half_sum_compute(b, &y_lo, &y_hi, &y_sum);
-    schoolbook_mul_into_inverse(b, &x_sum, &y_sum, z1_reg);
+    schoolbook_mul_into_addsub_inverse(b, &x_sum, &y_sum, z1_reg);
     karatsuba_half_sum_uncompute(b, &y_lo, &y_hi, &y_sum);
     karatsuba_half_sum_uncompute(b, &x_lo, &x_hi, &x_sum);
     b.free_vec(&y_sum);
