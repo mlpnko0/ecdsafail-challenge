@@ -20,8 +20,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    add_nbit_qq_fast, kaliski_iteration, mod_double_no_corr, sub_nbit_qq_fast, with_gt, B,
-    N, OperationType, SECP256K1_P,
+    add_nbit_qq_fast, cmp_lt_into_fast, cswap, kaliski_iteration, mod_double_no_corr,
+    sub_nbit_qq_fast, with_gt, B, N, OperationType, QubitId, SECP256K1_P,
 };
 use super::kaliski_jump::{KCase, Sampler, observe_window};
 use super::test_timeout::{check_deadline, two_min_deadline};
@@ -74,6 +74,9 @@ pub struct HybridProtoSummary {
     pub total_recompute_ccx: f64,
     pub total_recompute_cliff: f64,
 
+    pub real_bulk3_forward: ProtoCost,
+    pub real_bulk3_specialized: ProtoCost,
+
     pub top_prefix_rows: Vec<PrefixCostRow>,
 }
 
@@ -95,7 +98,7 @@ fn summarize_builder(b: &B) -> ProtoCost {
     out
 }
 
-fn shift_right_known_even(b: &mut B, v: &[super::QubitId]) {
+fn shift_right_known_even(b: &mut B, v: &[QubitId]) {
     for i in 0..(v.len() - 1) {
         b.swap(v[i], v[i + 1]);
     }
@@ -118,12 +121,36 @@ fn prefix_to_string(prefix: [KCase; 3]) -> String {
 /// Branch-free realization of a *known* Kaliski case, intended only as a
 /// lower-bound prototype for profiling. This is not yet a full reversible
 /// hybrid primitive: there is no selector, no cleanup, and no tail handling.
+fn c_shift_left_no_corr(b: &mut B, v: &[QubitId], ctrl: QubitId) {
+    for i in (0..(v.len() - 1)).rev() {
+        cswap(b, ctrl, v[i], v[i + 1]);
+    }
+}
+
+fn cucc_add_ctrl_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
+    let n = a.len();
+    let tmp = b.alloc_qubits(n);
+    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    add_nbit_qq_fast(b, &tmp, acc);
+    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    b.free_vec(&tmp);
+}
+
+fn cucc_sub_ctrl_fast(b: &mut B, a: &[QubitId], acc: &[QubitId], ctrl: QubitId) {
+    let n = a.len();
+    let tmp = b.alloc_qubits(n);
+    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    sub_nbit_qq_fast(b, &tmp, acc);
+    for i in 0..n { b.ccx(ctrl, a[i], tmp[i]); }
+    b.free_vec(&tmp);
+}
+
 fn exact_known_case_step(
     b: &mut B,
-    u: &[super::QubitId],
-    v: &[super::QubitId],
-    r: &[super::QubitId],
-    s: &[super::QubitId],
+    u: &[QubitId],
+    v: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
     iter_idx: usize,
     kc: KCase,
 ) {
@@ -162,10 +189,10 @@ fn exact_known_case_step(
 
 fn exact_known_case_step_inverse(
     b: &mut B,
-    u: &[super::QubitId],
-    v: &[super::QubitId],
-    r: &[super::QubitId],
-    s: &[super::QubitId],
+    u: &[QubitId],
+    v: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
     iter_idx: usize,
     kc: KCase,
 ) {
@@ -198,7 +225,7 @@ fn exact_known_case_step_inverse(
     }
 }
 
-fn emit_gt_compare(b: &mut B, u: &[super::QubitId], v: &[super::QubitId]) {
+fn emit_gt_compare(b: &mut B, u: &[QubitId], v: &[QubitId]) {
     let flag = b.alloc_qubit();
     with_gt(b, u, v, flag, |_b| {});
     b.free(flag);
@@ -291,6 +318,207 @@ fn profile_gt_compare() -> ProtoCost {
     summarize_builder(&b)
 }
 
+#[derive(Debug)]
+struct BulkStepLive {
+    u_even: QubitId,
+    v_even: QubitId,
+    both_odd: QubitId,
+    cmp: QubitId,
+}
+
+fn bulk_step_forward_keep_live(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
+    iter_idx: usize,
+) -> BulkStepLive {
+    let rs_add_width = (iter_idx + 2).min(N);
+
+    let u_even = b.alloc_qubit();
+    b.x(u_even);
+    b.cx(u[0], u_even); // u_even = !u0
+
+    let v_even = b.alloc_qubit();
+    b.x(v[0]);
+    b.ccx(u[0], v[0], v_even); // v_even = u0 & !v0
+    b.x(v[0]);
+
+    let both_odd = b.alloc_qubit();
+    b.ccx(u[0], v[0], both_odd);
+
+    // Even cases.
+    for i in 0..(u.len() - 1) { cswap(b, u_even, u[i], u[i + 1]); }
+    c_shift_left_no_corr(b, s, u_even);
+
+    for i in 0..(v.len() - 1) { cswap(b, v_even, v[i], v[i + 1]); }
+    c_shift_left_no_corr(b, r, v_even);
+
+    // Always compute compare for now; derivability tests showed cmp1/cmp2 are
+    // not available up front. Keep cmp live for cleanup.
+    let cmp = b.alloc_qubit();
+    cmp_lt_into_fast(b, v, u, cmp); // cmp = (u > v)
+
+    let ug = b.alloc_qubit();
+    b.ccx(both_odd, cmp, ug);
+    let vg = b.alloc_qubit();
+    b.x(cmp);
+    b.ccx(both_odd, cmp, vg);
+    b.x(cmp);
+
+    cucc_sub_ctrl_fast(b, v, u, ug);
+    for i in 0..(u.len() - 1) { cswap(b, ug, u[i], u[i + 1]); }
+    let s_slice = s[..rs_add_width].to_vec();
+    let r_slice = r[..rs_add_width].to_vec();
+    cucc_add_ctrl_fast(b, &s_slice, &r_slice, ug);
+    c_shift_left_no_corr(b, s, ug);
+
+    cucc_sub_ctrl_fast(b, u, v, vg);
+    for i in 0..(v.len() - 1) { cswap(b, vg, v[i], v[i + 1]); }
+    let r2_slice = r[..rs_add_width].to_vec();
+    let s2_slice = s[..rs_add_width].to_vec();
+    cucc_add_ctrl_fast(b, &r2_slice, &s2_slice, vg);
+    c_shift_left_no_corr(b, r, vg);
+
+    // ug/vg are derivable from cmp + original parities, so drop their direct
+    // conjunctions and keep the base flags live.
+    b.ccx(both_odd, cmp, ug);
+    b.x(cmp);
+    b.ccx(both_odd, cmp, vg);
+    b.x(cmp);
+    b.free(ug);
+    b.free(vg);
+
+    BulkStepLive { u_even, v_even, both_odd, cmp }
+}
+
+fn kaliski_bulk_iteration_specialized(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
+    iter_idx: usize,
+) {
+    let a_f = b.alloc_qubit();
+    let b_f = b.alloc_qubit();
+    let add_f = b.alloc_qubit();
+    let m_i = b.alloc_qubit();
+
+    // Specialized nonterminal, f=1 version of STEP 1.
+    b.x(a_f);
+    b.cx(u[0], a_f); // a_f = !u0
+    b.x(v[0]);
+    b.ccx(u[0], v[0], m_i); // m_i = u0 & !v0
+    b.x(v[0]);
+    b.cx(a_f, b_f);
+    b.cx(m_i, b_f); // b_f = a_f xor m_i
+
+    // Specialized STEP 2: use compare only for odd/odd cases.
+    let l_gt = b.alloc_qubit();
+    with_gt(b, u, v, l_gt, |b| {
+        b.x(b_f);
+        let t = b.alloc_qubit();
+        b.ccx(l_gt, b_f, t);
+        b.cx(t, a_f);
+        b.cx(t, m_i);
+        b.ccx(l_gt, b_f, t);
+        b.free(t);
+        b.x(b_f);
+    });
+    b.free(l_gt);
+
+    // STEP 3 cswaps.
+    for j in 0..u.len() { cswap(b, a_f, u[j], v[j]); }
+    let rs_width_step3 = (iter_idx + 1).min(N);
+    for j in 0..rs_width_step3 { cswap(b, a_f, r[j], s[j]); }
+
+    // STEP 4 with add_f = !b_f.
+    b.x(add_f);
+    b.cx(b_f, add_f);
+    {
+        let tmp = b.alloc_qubits(N);
+        for i in 0..N { b.ccx(add_f, u[i], tmp[i]); }
+        sub_nbit_qq_fast(b, &tmp, v);
+        let transform_width = (iter_idx + 1).min(N);
+        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
+        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        let add_width = (iter_idx + 2).min(N);
+        let mut tmp_slice: Vec<QubitId> = tmp[..transform_width].to_vec();
+        let tmp_pad = if add_width > transform_width {
+            let q = b.alloc_qubit();
+            tmp_slice.push(q);
+            Some(q)
+        } else {
+            None
+        };
+        let s_slice: Vec<QubitId> = s[..add_width].to_vec();
+        add_nbit_qq_fast(b, &tmp_slice, &s_slice);
+        if let Some(q) = tmp_pad { b.free(q); }
+        for i in 0..N {
+            let m = b.alloc_bit();
+            b.hmr(tmp[i], m);
+            if i < transform_width {
+                b.cz_if(add_f, r[i], m);
+            } else {
+                b.cz_if(add_f, u[i], m);
+            }
+        }
+        b.free_vec(&tmp);
+    }
+
+    // STEP 5 uncompute add_f,b_f.
+    b.cx(b_f, add_f);
+    b.x(add_f);
+    b.cx(m_i, b_f);
+    b.cx(a_f, b_f);
+
+    // STEP 6-8 unconditional shift/double.
+    for i in 0..(N - 1) { b.swap(v[i], v[i + 1]); }
+    mod_double_no_corr(b, r);
+
+    // STEP 9 cswaps again.
+    for j in 0..u.len() { cswap(b, a_f, u[j], v[j]); }
+    let rs_width_step9 = (iter_idx + 2).min(N);
+    for j in 0..rs_width_step9 { cswap(b, a_f, r[j], s[j]); }
+
+    // STEP 10 uncompute a.
+    b.x(s[0]);
+    b.cx(s[0], a_f);
+    b.x(s[0]);
+
+    b.free(m_i);
+    b.free(add_f);
+    b.free(b_f);
+    b.free(a_f);
+}
+
+fn profile_real_bulk3_forward() -> ProtoCost {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    let _live0 = bulk_step_forward_keep_live(&mut b, &u, &v, &r, &s, 0);
+    let _live1 = bulk_step_forward_keep_live(&mut b, &u, &v, &r, &s, 1);
+    let _live2 = bulk_step_forward_keep_live(&mut b, &u, &v, &r, &s, 2);
+    summarize_builder(&b)
+}
+
+fn profile_real_bulk3_specialized() -> ProtoCost {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    kaliski_bulk_iteration_specialized(&mut b, &u, &v, &r, &s, 0);
+    kaliski_bulk_iteration_specialized(&mut b, &u, &v, &r, &s, 1);
+    kaliski_bulk_iteration_specialized(&mut b, &u, &v, &r, &s, 2);
+    summarize_builder(&b)
+}
+
 fn collect_full_prefix_counts(seed: &[u8], n_inputs: usize, w: usize) -> BTreeMap<[KCase; 3], usize> {
     let deadline = two_min_deadline();
     let mut sampler = Sampler::new(seed, SECP256K1_P);
@@ -350,6 +578,8 @@ pub fn profile_exact3_bulk_core(seed: &[u8], n_inputs: usize, w: usize) -> Hybri
     let lower_bound_ccx_savings_pct_vs_baseline4 = 100.0 * lower_bound_ccx_savings_vs_baseline4 / baseline4.ccx as f64;
 
     let gt_compare = profile_gt_compare();
+    let real_bulk3_forward = profile_real_bulk3_forward();
+    let real_bulk3_specialized = profile_real_bulk3_specialized();
     let mut weighted_staged_exact3_ccx = 0.0;
     let mut weighted_staged_exact3_cliff = 0.0;
     let mut weighted_recompute_cleanup_ccx = 0.0;
@@ -401,6 +631,8 @@ pub fn profile_exact3_bulk_core(seed: &[u8], n_inputs: usize, w: usize) -> Hybri
         total_keep_live_cliff,
         total_recompute_ccx,
         total_recompute_cliff,
+        real_bulk3_forward,
+        real_bulk3_specialized,
         top_prefix_rows: rows,
     }
 }
@@ -427,6 +659,8 @@ mod tests {
         eprintln!("weighted cleanup recompute overhead   : ccx={:.1} cliff={:.1}", s.weighted_recompute_cleanup_ccx, s.weighted_recompute_cleanup_cliff);
         eprintln!("keep-live strategy total              : ccx={:.1} cliff={:.1}", s.total_keep_live_ccx, s.total_keep_live_cliff);
         eprintln!("recompute strategy total              : ccx={:.1} cliff={:.1}", s.total_recompute_ccx, s.total_recompute_cliff);
+        eprintln!("real forward bulk3 keep-live proto    : ccx={} cliff={} peak_qubits={}", s.real_bulk3_forward.ccx, s.real_bulk3_forward.cliff, s.real_bulk3_forward.peak_qubits);
+        eprintln!("real bulk3 specialized primitive      : ccx={} cliff={} peak_qubits={}", s.real_bulk3_specialized.ccx, s.real_bulk3_specialized.cliff, s.real_bulk3_specialized.peak_qubits);
         eprintln!("top full-window prefixes:");
         for row in &s.top_prefix_rows {
             eprintln!(
@@ -449,5 +683,7 @@ mod tests {
         assert!(s.weighted_staged_exact3_ccx > s.weighted_exact3_ccx);
         assert!(s.weighted_recompute_cleanup_ccx > 0.0);
         assert!(s.total_recompute_ccx > s.total_keep_live_ccx);
+        assert!(s.real_bulk3_forward.ccx > s.weighted_staged_exact3_ccx as u64);
+        assert!(s.real_bulk3_specialized.ccx < s.baseline3.ccx);
     }
 }

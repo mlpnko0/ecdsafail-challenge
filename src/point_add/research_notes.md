@@ -507,6 +507,68 @@ Interpretation:
   keeping them live costs classical bit storage, not extra Toffoli.
 - Recomputing from output state is far too expensive to be the default plan.
 
+## New strongest result: a naive “real” exact-step controlization is terrible, but a specialized nonterminal bulk primitive is genuinely cheaper
+
+I pushed one step beyond cost-modeling and built two more **real builder-level**
+prototypes in `src/point_add/kaliski_hybrid_proto.rs`.
+
+### 1. Naive real forward bulk-3 keep-live prototype
+This prototype literally controlizes the case-specific exact operations using
+runtime case flags and kept-live compare bits.
+
+Measured cost:
+
+| object | CCX | Clifford-ish | peak qubits |
+|---|---:|---:|---:|
+| naive real forward bulk-3 keep-live prototype | **11,556** | **34,635** | **1,550** |
+
+This is **worse** than 3 ordinary Kaliski iterations (`4,647 CCX`).
+
+Interpretation:
+- directly turning the exact branch formulas into controlled sub/add/shift
+  networks is a dead end,
+- because controlled shifts and controlled arithmetic destroy the lower-bound
+  savings.
+
+So the moonshot cannot be realized as a naive “selector + fully-controlled exact
+branch bodies” construction.
+
+### 2. Real specialized nonterminal bulk-3 primitive
+I then derived a more faithful prototype directly from the existing
+`kaliski_iteration` structure:
+- assume the early-window bulk precondition (`f = 1`, `v != 0`),
+- remove STEP 0 / eqzero handling,
+- specialize the flag logic for `f = 1`,
+- keep the rest close to the existing reversible structure.
+
+Measured cost:
+
+| object | CCX | Clifford-ish | peak qubits |
+|---|---:|---:|---:|
+| real specialized bulk-3 primitive | **3,873** | **20,877** | **1,540** |
+| baseline 3 Kaliski iterations | **4,647** | **23,199** | **1,543** |
+
+So this real specialized primitive is an actual win:
+- **774 CCX saved** over 3 ordinary iterations,
+- about **16.7%** lower Toffoli,
+- with slightly lower peak qubits as well.
+
+This is the first genuinely cheaper **real builder-level** bulk primitive in the
+project.
+
+### Attempted direct main-path integration: not yet correct
+I also tried swapping the specialized bulk primitive into the live Kaliski
+forward path for the first 3 iterations. That attempt **failed full point-add
+correctness**, so it was backed out immediately.
+
+Current diagnosis:
+- the forward primitive is promising,
+- but its compatibility with the stored `m_hist` history / generic backward path
+  is not yet nailed down.
+
+So this remains a real integrated **prototype**, not yet an enabled circuit
+replacement.
+
 ## Revised state of the moonshot
 The good news:
 - the exact bulk key shrank all the way to **9 bits**,
@@ -529,15 +591,25 @@ selector / cleanup path is worked out more concretely.
 
 ## Proposed next sessions
 
-### P1. Enumerate the exact 36 bulk 3-step classes
+### P1. Make the real specialized bulk-3 primitive backward-compatible
+The highest-value next step is now:
+- pin down why the direct forward-path swap broke correctness,
+- determine the exact history-state (`m_hist`, flag semantics, etc.) mismatch,
+- and either derive a matching backward for the specialized primitive or prove
+  how to make its persistent state identical to the generic step.
+
+This is the shortest path from prototype to an actual circuit replacement.
+
+### P2. Enumerate the exact 36 bulk 3-step classes
 For the full-window bulk family, produce:
 - canonical representative branch sequences,
 - the exact `(uv_mat, rs_mat)` pair,
 - the low-bit / compare-bit conditions under which each occurs.
 
-This is now the cleanest classical-to-reversible handoff point.
+This remains the cleanest classical-to-reversible handoff point for the more
+selector-driven variants.
 
-### P2. Build a reversible cost model for the staged exact 3-step core
+### P3. Build a reversible cost model for the staged exact 3-step core
 Estimate the real cost of:
 - forming `cmp0, cmp1, cmp2` **sequentially**,
 - using the exact 9-bit bulk key `(u mod 8, v mod 8, cmp0, cmp1, cmp2)`,
@@ -547,24 +619,24 @@ Estimate the real cost of:
 
 This should be compared directly against 3 ordinary Kaliski micro-steps.
 
-### P3. Design the tiny tail fallback
+### P4. Design the tiny tail fallback
 Because every trajectory has exactly three short terminal windows, we can likely
 handle them with a separate, tiny cleanup path rather than bloating the bulk
 primitive.
-
-### P4. Revisit `t = 4` exact selection only if needed
-An exact 4-step selector is no longer the best first target. It is now a
-second-stage refinement after the 3-step bulk core is costed.
 
 ## Bottom line
 
 The strongest current research judgement is:
 
-> The best moonshot is still **hybrid Kaliski-jump batching**, but the concrete
-> first prototype should be a **staged exact 3-step bulk primitive** using the
-> exact 9-bit key `(u mod 8, v mod 8, cmp0, cmp1, cmp2)`, with compare bits
-> generated sequentially and kept live across the core, followed by one
-> ordinary step and a tiny tail fallback.
+> The best moonshot is still **hybrid Kaliski-jump batching**, but there are now
+> two concrete implementation tracks:
+> 1. a **staged exact 3-step bulk primitive** using the exact 9-bit key
+>    `(u mod 8, v mod 8, cmp0, cmp1, cmp2)` with sequential compare generation
+>    and keep-live cleanup, and
+> 2. a more conservative **specialized nonterminal bulk-3 primitive** derived
+>    directly from the existing Kaliski step, which already shows a real
+>    16.7% builder-level win over 3 generic iterations but is not yet wired
+>    into the live circuit because backward compatibility is unresolved.
 
 That is still novel research, but it is now tied to a very concrete empirical
 structure in the 81%-of-budget hot path, rather than just a vague hope that a

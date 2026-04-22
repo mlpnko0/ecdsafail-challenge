@@ -3040,6 +3040,122 @@ fn mulmod(a: U256, b: U256, p: U256) -> U256 {
 /// a plain shift (0 Toffoli) for ~255 CCX savings per iter.
 const R_SMALL_THRESHOLD: usize = 255;
 
+/// Specialized real forward primitive for the first few guaranteed-bulk
+/// Kaliski iterations where `f = 1` and `v_w != 0` are known a priori.
+///
+/// This keeps the same persistent-state interface as `kaliski_iteration`
+/// (notably `m_i` ends in the same value that the generic step would have
+/// produced), but drops STEP 0 / `f` handling entirely.
+///
+/// Not wired into the live inversion path yet: a direct forward-only swap-in
+/// attempt did not preserve full point-add correctness, so this remains an
+/// experimental helper while the history/backward compatibility conditions are
+/// worked out.
+fn kaliski_iteration_bulk_prefix3(
+    b: &mut B,
+    u: &[QubitId],
+    v_w: &[QubitId],
+    r: &[QubitId],
+    s: &[QubitId],
+    m_i: QubitId,
+    iter_idx: usize,
+) {
+    let a_f = b.alloc_qubit();
+    let b_f = b.alloc_qubit();
+    let add_f = b.alloc_qubit();
+
+    let _kal_saved_phase = b.phase;
+    b.set_phase("kal_bulk_step1");
+    // Specialized STEP 1 for f=1.
+    b.x(a_f);
+    b.cx(u[0], a_f); // a_f = !u0
+    b.x(v_w[0]);
+    b.ccx(u[0], v_w[0], m_i); // m_i = u0 & !v0
+    b.x(v_w[0]);
+    b.cx(a_f, b_f);
+    b.cx(m_i, b_f); // b_f = a_f xor m_i
+
+    b.set_phase("kal_bulk_step2");
+    let l_gt = b.alloc_qubit();
+    with_gt(b, u, v_w, l_gt, |b| {
+        b.x(b_f);
+        let t = b.alloc_qubit();
+        b.ccx(l_gt, b_f, t);
+        b.cx(t, a_f);
+        b.cx(t, m_i);
+        b.ccx(l_gt, b_f, t);
+        b.free(t);
+        b.x(b_f);
+    });
+    b.free(l_gt);
+
+    b.set_phase("kal_bulk_step3_cswap");
+    for j in 0..u.len() { cswap(b, a_f, u[j], v_w[j]); }
+    let rs_width_step3 = if iter_idx + 1 < u.len() { iter_idx + 1 } else { u.len() };
+    for j in 0..rs_width_step3 { cswap(b, a_f, r[j], s[j]); }
+
+    b.set_phase("kal_bulk_step4");
+    // Specialized STEP 4 with add_f = !b_f.
+    b.x(add_f);
+    b.cx(b_f, add_f);
+    {
+        let n = u.len();
+        let tmp = b.alloc_qubits(n);
+        for i in 0..n { b.ccx(add_f, u[i], tmp[i]); }
+        sub_nbit_qq_fast(b, &tmp, v_w);
+        let transform_width = if iter_idx + 1 < n { iter_idx + 1 } else { n };
+        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        for i in 0..transform_width { b.ccx(add_f, u[i], tmp[i]); }
+        for i in 0..transform_width { b.cx(r[i], u[i]); }
+        let add_width = if iter_idx + 2 < n { iter_idx + 2 } else { n };
+        let mut tmp_slice: Vec<QubitId> = tmp[0..transform_width].to_vec();
+        let tmp_pad = if add_width > transform_width {
+            let q = b.alloc_qubit();
+            tmp_slice.push(q);
+            Some(q)
+        } else {
+            None
+        };
+        let s_slice: Vec<QubitId> = s[0..add_width].to_vec();
+        add_nbit_qq_fast(b, &tmp_slice, &s_slice);
+        if let Some(q) = tmp_pad { b.free(q); }
+        for i in 0..n {
+            let m = b.alloc_bit();
+            b.hmr(tmp[i], m);
+            if i < transform_width {
+                b.cz_if(add_f, r[i], m);
+            } else {
+                b.cz_if(add_f, u[i], m);
+            }
+        }
+        b.free_vec(&tmp);
+    }
+
+    b.set_phase("kal_bulk_step5");
+    b.cx(b_f, add_f);
+    b.x(add_f);
+    b.cx(m_i, b_f);
+    b.cx(a_f, b_f);
+
+    b.set_phase("kal_bulk_step6_7_8");
+    for i in 0..(u.len() - 1) { b.swap(v_w[i], v_w[i + 1]); }
+    mod_double_no_corr(b, r);
+
+    b.set_phase("kal_bulk_step9_cswap");
+    for j in 0..u.len() { cswap(b, a_f, u[j], v_w[j]); }
+    let rs_width_step9 = if iter_idx + 2 < u.len() { iter_idx + 2 } else { u.len() };
+    for j in 0..rs_width_step9 { cswap(b, a_f, r[j], s[j]); }
+
+    b.x(s[0]);
+    b.cx(s[0], a_f);
+    b.x(s[0]);
+
+    b.free(add_f);
+    b.free(b_f);
+    b.free(a_f);
+    b.set_phase(_kal_saved_phase);
+}
+
 fn kaliski_iteration(
     b: &mut B,
     p: U256,
