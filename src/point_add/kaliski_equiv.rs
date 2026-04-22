@@ -19,10 +19,10 @@ use crate::sim::Simulator;
 use super::kaliski_jump::Sampler;
 use super::test_timeout::{check_deadline, two_min_deadline};
 use super::{
-    kaliski_iteration, kaliski_iteration_bulk_prefix3, with_kal_inv_raw, B, N, Op, QubitId,
+    kaliski_iteration, kaliski_iteration_backward, kaliski_iteration_bulk_prefix3,
+    kaliski_iteration_bulk_prefix3_backward, with_kal_inv_raw, B, N, Op, QubitId,
     SECP256K1_P,
 };
-
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -74,6 +74,19 @@ struct IdentityCircuit {
     num_qubits: usize,
     num_bits: usize,
     v: Vec<QubitId>,
+}
+
+#[derive(Clone)]
+struct PrefixCircuit {
+    ops: Vec<Op>,
+    num_qubits: usize,
+    num_bits: usize,
+    u: Vec<QubitId>,
+    v: Vec<QubitId>,
+    r: Vec<QubitId>,
+    s: Vec<QubitId>,
+    m_hist: Vec<QubitId>,
+    f: QubitId,
 }
 
 fn build_generic_step(iter_idx: usize) -> StepCircuit {
@@ -129,6 +142,88 @@ fn build_special_three_steps() -> StepCircuit {
     }
 }
 
+fn build_generic_prefix(k: usize) -> PrefixCircuit {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    let f = b.alloc_qubit();
+    let m_hist = b.alloc_qubits(k);
+    for i in 0..k {
+        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+    }
+    PrefixCircuit {
+        ops: b.ops,
+        num_qubits: b.next_qubit as usize,
+        num_bits: b.next_bit as usize,
+        u, v, r, s, m_hist, f,
+    }
+}
+
+fn build_special_prefix(k: usize) -> PrefixCircuit {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    let f = b.alloc_qubit();
+    let m_hist = b.alloc_qubits(k);
+    for i in 0..k {
+        kaliski_iteration_bulk_prefix3(&mut b, &u, &v, &r, &s, m_hist[i], i);
+    }
+    PrefixCircuit {
+        ops: b.ops,
+        num_qubits: b.next_qubit as usize,
+        num_bits: b.next_bit as usize,
+        u, v, r, s, m_hist, f,
+    }
+}
+
+fn build_generic_prefix_fb(k: usize) -> PrefixCircuit {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    let f = b.alloc_qubit();
+    let m_hist = b.alloc_qubits(k);
+    for i in 0..k {
+        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+    }
+    for i in (0..k).rev() {
+        kaliski_iteration_backward(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+    }
+    PrefixCircuit {
+        ops: b.ops,
+        num_qubits: b.next_qubit as usize,
+        num_bits: b.next_bit as usize,
+        u, v, r, s, m_hist, f,
+    }
+}
+
+fn build_special_prefix_fb(k: usize) -> PrefixCircuit {
+    let mut b = B::new();
+    let u = b.alloc_qubits(N);
+    let v = b.alloc_qubits(N);
+    let r = b.alloc_qubits(N);
+    let s = b.alloc_qubits(N);
+    let f = b.alloc_qubit();
+    let m_hist = b.alloc_qubits(k);
+    for i in 0..k {
+        kaliski_iteration_bulk_prefix3(&mut b, &u, &v, &r, &s, m_hist[i], i);
+    }
+    for i in (0..k).rev() {
+        kaliski_iteration_bulk_prefix3_backward(&mut b, &u, &v, &r, &s, m_hist[i], i);
+    }
+    PrefixCircuit {
+        ops: b.ops,
+        num_qubits: b.next_qubit as usize,
+        num_bits: b.next_bit as usize,
+        u, v, r, s, m_hist, f,
+    }
+}
+
 fn build_with_kal_inv_identity(enabled: bool, bulk_iters: usize) -> IdentityCircuit {
     with_bulk_env(bulk_iters, enabled, || {
         let mut b = B::new();
@@ -181,6 +276,31 @@ fn run_step_circuit(c: &StepCircuit, u0: U256, v0: U256, r0: U256, s0: U256, m0:
         get_slice(&sim, &c.r),
         get_slice(&sim, &c.s),
         (sim.qubit(c.m) & 1) != 0,
+        (sim.qubit(c.f) & 1) != 0,
+        sim.global_phase() & 1,
+    )
+}
+
+fn run_prefix_circuit(c: &PrefixCircuit, u0: U256, v0: U256, r0: U256, s0: U256, f0: bool)
+    -> (U256, U256, U256, U256, Vec<bool>, bool, u64)
+{
+    let mut hasher = sha3::Shake128::default();
+    hasher.update(b"kaliski-equivalence-seed-v-prefix");
+    let mut xof = hasher.finalize_xof();
+    let mut sim = Simulator::new(c.num_qubits, c.num_bits, &mut xof);
+    set_slice(&mut sim, &c.u, u0);
+    set_slice(&mut sim, &c.v, v0);
+    set_slice(&mut sim, &c.r, r0);
+    set_slice(&mut sim, &c.s, s0);
+    if f0 { *sim.qubit_mut(c.f) |= 1; }
+    sim.apply(&c.ops);
+    let mh: Vec<bool> = c.m_hist.iter().map(|&q| (sim.qubit(q) & 1) != 0).collect();
+    (
+        get_slice(&sim, &c.u),
+        get_slice(&sim, &c.v),
+        get_slice(&sim, &c.r),
+        get_slice(&sim, &c.s),
+        mh,
         (sim.qubit(c.f) & 1) != 0,
         sim.global_phase() & 1,
     )
@@ -448,6 +568,31 @@ mod tests {
                 assert_eq!(s.0, v0, "special identity output mismatch sample {} k={}", sample_idx, k);
                 assert_eq!(g.0, s.0, "identity output divergence sample {} k={}", sample_idx, k);
                 assert_eq!(g.1, s.1, "phase divergence sample {} k={} generic_phase={} special_phase={}", sample_idx, k, g.1, s.1);
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_phase_and_mhist_equivalence_grid() {
+        let deadline = two_min_deadline();
+        let ks = [4usize, 8, 16, 32, 40, 64, 96, 128];
+        let generic_fwd: Vec<_> = ks.iter().map(|&k| build_generic_prefix(k)).collect();
+        let special_fwd: Vec<_> = ks.iter().map(|&k| build_special_prefix(k)).collect();
+        let generic_fb: Vec<_> = ks.iter().map(|&k| build_generic_prefix_fb(k)).collect();
+        let special_fb: Vec<_> = ks.iter().map(|&k| build_special_prefix_fb(k)).collect();
+        let mut sampler = Sampler::new(b"kaliski-equiv-sampler-v7", SECP256K1_P);
+
+        for sample_idx in 0..48usize {
+            if (sample_idx & 15) == 0 { check_deadline(deadline, "kaliski_equiv::prefix_phase_and_mhist_equivalence_grid"); }
+            let v0 = sampler.next();
+            for (j, &k) in ks.iter().enumerate() {
+                let gf = run_prefix_circuit(&generic_fwd[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
+                let sf = run_prefix_circuit(&special_fwd[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
+                assert_eq!(gf, sf, "forward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}", sample_idx, k, gf, sf);
+
+                let gb = run_prefix_circuit(&generic_fb[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
+                let sb = run_prefix_circuit(&special_fb[j], SECP256K1_P, v0, U256::ZERO, U256::from(1), true);
+                assert_eq!(gb, sb, "forward+backward prefix mismatch sample {} k={}\ngeneric={:?}\nspecial={:?}", sample_idx, k, gb, sb);
             }
         }
     }
