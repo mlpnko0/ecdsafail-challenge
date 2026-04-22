@@ -1,12 +1,11 @@
-//! Reproduce the first strict phase-failing batch for an experimental prefix
-//! length and bisect which top-level cut first shows a phase divergence.
+//! Reproduce the exact first strict phase-failing batch for an experimental
+//! bulk-prefix length and ask: at what top-level cut does the experimental
+//! circuit itself first acquire nonzero phase on that batch?
 //!
-//! This mirrors `main.rs` closely enough to find the actual failing batch:
-//! - one Shake instance seeded from the experimental op stream,
-//! - point generation and simulator randomness consume that same stream.
-//!
-//! Then, on that exact 64-shot batch, we compare generic vs experimental phase
-//! at a few top-level cuts using a shared deterministic simulator seed.
+//! This uses the same overall protocol as `main.rs`:
+//! - one circuit-seeded Shake stream,
+//! - all 9024 accepted points generated first,
+//! - then simulator randomness drawn from the *same* stream batch-by-batch.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -23,6 +22,9 @@ use super::{
     mod_mul_sub_qq, mod_mul_write_into_zero_acc_karatsuba2, mod_mul_write_into_zero_acc_schoolbook,
     mod_neg_inplace_fast, mod_sub_qb, with_kal_inv_raw,
 };
+
+const NUM_TESTS: usize = 9024;
+const BATCH: usize = 64;
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -165,83 +167,70 @@ fn set_bits<R: sha3::digest::XofReader>(sim: &mut Simulator<R>, bs: &[BitId], va
     }
 }
 
-fn run_cut_on_batch(c: &CutCircuit, batch_pts: &[((U256,U256),(U256,U256))]) -> u64 {
-    let mut hasher = sha3::Shake128::default();
-    hasher.update(b"kaliski-phase-bisect-v1");
-    let mut xof = hasher.finalize_xof();
-    let mut sim = Simulator::new(c.num_qubits, c.num_bits, &mut xof);
-    for (shot, &(t, o)) in batch_pts.iter().enumerate() {
-        set_qubits(&mut sim, &c.tx, t.0, shot);
-        set_qubits(&mut sim, &c.ty, t.1, shot);
-        set_bits(&mut sim, &c.ox, o.0, shot);
-        set_bits(&mut sim, &c.oy, o.1, shot);
-    }
-    sim.apply(&c.ops);
-    sim.global_phase()
+fn hmr_r_count(ops: &[Op]) -> usize {
+    ops.iter().filter(|op| matches!(op.kind, crate::circuit::OperationType::Hmr | crate::circuit::OperationType::R)).count()
 }
 
-fn sampled_batches_for_ops(ops: &[Op], n_batches: usize) -> Vec<Vec<((U256,U256),(U256,U256))>> {
+fn generate_all_points_and_leave_xof(ops: &[Op]) -> (Vec<((U256,U256),(U256,U256))>, sha3::Shake256Reader) {
     let curve = secp256k1();
     let mut xof = fiat_shamir_seed(ops);
-    let mut batches = Vec::with_capacity(n_batches);
-    for _ in 0..n_batches {
-        let mut current = Vec::with_capacity(64);
-        while current.len() < 64 {
-            let mut rb = [[0u8; 32]; 2];
-            xof.read(&mut rb[0]);
-            xof.read(&mut rb[1]);
-            let k1 = U256::from_le_bytes(rb[0]);
-            let k2 = U256::from_le_bytes(rb[1]);
-            let t = curve.mul(curve.gx, curve.gy, k1);
-            let o = curve.mul(curve.gx, curve.gy, k2);
-            if t.0 == o.0 { continue; }
-            if t.0.is_zero() && t.1.is_zero() { continue; }
-            if o.0.is_zero() && o.1.is_zero() { continue; }
-            current.push((t, o));
-        }
-        batches.push(current);
+    let mut out = Vec::with_capacity(NUM_TESTS);
+    while out.len() < NUM_TESTS {
+        let mut rb = [[0u8; 32]; 2];
+        xof.read(&mut rb[0]);
+        xof.read(&mut rb[1]);
+        let k1 = U256::from_le_bytes(rb[0]);
+        let k2 = U256::from_le_bytes(rb[1]);
+        let t = curve.mul(curve.gx, curve.gy, k1);
+        let o = curve.mul(curve.gx, curve.gy, k2);
+        if t.0 == o.0 { continue; }
+        if t.0.is_zero() && t.1.is_zero() { continue; }
+        if o.0.is_zero() && o.1.is_zero() { continue; }
+        out.push((t, o));
     }
-    batches
+    (out, xof)
 }
 
-fn first_phase_failing_batch_points(bulk_iters: usize) -> Option<(usize, Vec<((U256,U256),(U256,U256))>)> {
-    let ops = build_full_ops(true, bulk_iters);
+fn first_phase_failing_batch(points: &[((U256,U256),(U256,U256))], ops: &[Op], mut xof: sha3::Shake256Reader) -> Option<usize> {
     let (total_qubits, num_bits, _nregs, regs) = analyze_ops(ops.iter().copied());
-    let curve = secp256k1();
-    let mut xof = fiat_shamir_seed(&ops);
-    let mut current = Vec::with_capacity(64);
-    let mut batch_idx = 0usize;
-    while batch_idx * 64 < 9024 {
-        while current.len() < 64 {
-            let mut rb = [[0u8; 32]; 2];
-            xof.read(&mut rb[0]);
-            xof.read(&mut rb[1]);
-            let k1 = U256::from_le_bytes(rb[0]);
-            let k2 = U256::from_le_bytes(rb[1]);
-            let t = curve.mul(curve.gx, curve.gy, k1);
-            let o = curve.mul(curve.gx, curve.gy, k2);
-            if t.0 == o.0 { continue; }
-            if t.0.is_zero() && t.1.is_zero() { continue; }
-            if o.0.is_zero() && o.1.is_zero() { continue; }
-            current.push((t, o));
-        }
-        let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
+    let mut sim = Simulator::new(total_qubits as usize, num_bits as usize, &mut xof);
+    for batch_idx in 0..(points.len() / BATCH) {
         sim.clear_for_shot();
-        for shot in 0..64 {
-            let (t, o) = current[shot];
+        for shot in 0..BATCH {
+            let (t, o) = points[batch_idx * BATCH + shot];
             sim.set_register(&regs[0], t.0, shot);
             sim.set_register(&regs[1], t.1, shot);
             sim.set_register(&regs[2], o.0, shot);
             sim.set_register(&regs[3], o.1, shot);
         }
-        sim.apply(&ops);
+        sim.apply(ops);
         if sim.global_phase() != 0 {
-            return Some((batch_idx, current.clone()));
+            return Some(batch_idx);
         }
-        current.clear();
-        batch_idx += 1;
     }
     None
+}
+
+fn run_cut_like_main(cut: &CutCircuit, full_ops: &[Op], points: &[((U256,U256),(U256,U256))], batch_idx: usize) -> u64 {
+    let (all_points, mut xof) = generate_all_points_and_leave_xof(full_ops);
+    assert_eq!(all_points.len(), points.len());
+    let bytes_to_skip = batch_idx * hmr_r_count(full_ops) * 8;
+    if bytes_to_skip > 0 {
+        let mut sink = vec![0u8; bytes_to_skip];
+        xof.read(&mut sink);
+    }
+
+    let mut sim = Simulator::new(cut.num_qubits, cut.num_bits, &mut xof);
+    let batch_pts = &points[batch_idx * BATCH .. (batch_idx + 1) * BATCH];
+    sim.clear_for_shot();
+    for (shot, &(t, o)) in batch_pts.iter().enumerate() {
+        set_qubits(&mut sim, &cut.tx, t.0, shot);
+        set_qubits(&mut sim, &cut.ty, t.1, shot);
+        set_bits(&mut sim, &cut.ox, o.0, shot);
+        set_bits(&mut sim, &cut.oy, o.1, shot);
+    }
+    sim.apply(&cut.ops);
+    sim.global_phase()
 }
 
 #[cfg(test)]
@@ -249,66 +238,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase_bisect_k4_first_failing_batch() {
+    fn phase_bisect_k4_like_main() {
         let deadline = two_min_deadline();
-        let (batch_idx, batch_pts) = first_phase_failing_batch_points(4).expect("expected failing phase batch for k=4");
-        check_deadline(deadline, "kaliski_phase_bisect::phase_bisect_k4_first_failing_batch");
+        let full = build_full_ops(true, 4);
+        let (points, xof_after_points) = generate_all_points_and_leave_xof(&full);
+        let batch_idx = first_phase_failing_batch(&points, &full, xof_after_points).expect("expected failing phase batch for k=4");
+        check_deadline(deadline, "kaliski_phase_bisect::phase_bisect_k4_like_main");
+
         let cuts = [Cut::AfterPair1, Cut::AfterRxMinusQx, Cut::AfterMul3, Cut::BeforeLamFree];
         let labels = ["after_pair1", "after_rx_minus_qx", "after_mul3", "before_lam_free"];
 
-        eprintln!("=== phase bisect on first failing batch, k=4 ===");
+        eprintln!("=== phase bisect k=4 using main-like replay ===");
         eprintln!("batch_idx = {}", batch_idx);
-        for (cut, label) in cuts.iter().zip(labels.iter()) {
-            let g = build_cut(false, 0, *cut);
-            let s = build_cut(true, 4, *cut);
-            let pg = run_cut_on_batch(&g, &batch_pts);
-            let ps = run_cut_on_batch(&s, &batch_pts);
-            eprintln!("{:<18} generic={:#018x} special={:#018x}", label, pg, ps);
+        for (cut_kind, label) in cuts.iter().zip(labels.iter()) {
+            let cut = build_cut(true, 4, *cut_kind);
+            let ph = run_cut_like_main(&cut, &full, &points, batch_idx);
+            eprintln!("{:<18} phase={:#018x}", label, ph);
         }
-        eprintln!("===============================================");
-        assert!(batch_idx < 9024 / 64);
-    }
-
-    #[test]
-    fn phase_bisect_k4_batch10_exact() {
-        let deadline = two_min_deadline();
-        let ops_exp = build_full_ops(true, 4);
-        let batches_exp = sampled_batches_for_ops(&ops_exp, 11);
-        let batch_pts = &batches_exp[10];
-        check_deadline(deadline, "kaliski_phase_bisect::phase_bisect_k4_batch10_exact");
-        let cuts = [Cut::AfterPair1, Cut::AfterRxMinusQx, Cut::AfterMul3, Cut::BeforeLamFree];
-        let labels = ["after_pair1", "after_rx_minus_qx", "after_mul3", "before_lam_free"];
-
-        eprintln!("=== phase bisect on exact batch 10, k=4 ===");
-        for (cut, label) in cuts.iter().zip(labels.iter()) {
-            let g = build_cut(false, 0, *cut);
-            let s = build_cut(true, 4, *cut);
-            let pg = run_cut_on_batch(&g, batch_pts);
-            let ps = run_cut_on_batch(&s, batch_pts);
-            eprintln!("{:<18} generic={:#018x} special={:#018x}", label, pg, ps);
-        }
-        eprintln!("==========================================");
-        assert_eq!(batch_pts.len(), 64);
-    }
-
-    #[test]
-    fn inspect_first_32_batch_phase_masks_k4() {
-        let deadline = two_min_deadline();
-        let ops_gen = build_full_ops(false, 0);
-        let ops_exp = build_full_ops(true, 4);
-        let batches_gen = sampled_batches_for_ops(&ops_gen, 32);
-        let batches_exp = sampled_batches_for_ops(&ops_exp, 32);
-        let full_gen = build_cut(false, 0, Cut::BeforeLamFree);
-        let full_exp = build_cut(true, 4, Cut::BeforeLamFree);
-
-        eprintln!("=== inspect first 32 batch phase masks k=4 ===");
-        for i in 0..32usize {
-            if (i & 7) == 0 { check_deadline(deadline, "kaliski_phase_bisect::inspect_first_32_batch_phase_masks_k4"); }
-            let pg = run_cut_on_batch(&full_gen, &batches_gen[i]);
-            let pe = run_cut_on_batch(&full_exp, &batches_exp[i]);
-            eprintln!("batch {:>2}: gen={:#018x} exp={:#018x}", i, pg, pe);
-        }
-        eprintln!("=============================================");
-        assert!(true);
+        eprintln!("==============================================");
+        assert!(batch_idx < NUM_TESTS / BATCH);
     }
 }
