@@ -3064,6 +3064,13 @@ fn bulk_prefix_safe_iters() -> usize {
         .unwrap_or(BULK_PREFIX_SAFE_ITERS)
 }
 
+fn bulk_prefix_enabled() -> bool {
+    match std::env::var("KAL_BULK3_EXPERIMENT") {
+        Ok(v) => v != "0",
+        Err(_) => true,
+    }
+}
+
 /// Specialized real forward primitive for the first few guaranteed-bulk
 /// Kaliski iterations where `f = 1` and `v_w != 0` are known a priori.
 ///
@@ -3566,7 +3573,7 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
     b.x(st.f_flag);
 
     // ─── Iterations ───
-    let use_bulk_prefix3 = std::env::var("KAL_BULK3_EXPERIMENT").is_ok();
+    let use_bulk_prefix3 = bulk_prefix_enabled();
     let bulk_prefix_iters = bulk_prefix_safe_iters();
     for i in 0..iters {
         if use_bulk_prefix3 && i < bulk_prefix_iters {
@@ -3969,7 +3976,7 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, ite
     let n = v_in.len();
     debug_assert!(iters <= st.m_hist.len());
 
-    let use_bulk_prefix3 = std::env::var("KAL_BULK3_EXPERIMENT").is_ok();
+    let use_bulk_prefix3 = bulk_prefix_enabled();
     let bulk_prefix_iters = bulk_prefix_safe_iters();
     // ─── Reverse iterations (in reverse order) ───
     for i in (0..iters).rev() {
