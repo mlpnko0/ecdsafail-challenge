@@ -4004,6 +4004,34 @@ fn kaliski_backward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, ite
 /// `kaliski_forward` ONCE (and its emit_inverse once), instead of the
 /// 4-call structure of the previous Bennett-cleaned `kal_compute_into`.
 /// Halves the dominant kaliski cost.
+fn emit_inverse_hmr_safe<F: FnOnce(&mut B)>(b: &mut B, f: F) {
+    let start = b.ops.len();
+    f(b);
+    let end = b.ops.len();
+    let fwd: Vec<_> = b.ops[start..end].to_vec();
+    b.ops.truncate(start);
+    for op in fwd.into_iter().rev() {
+        match op.kind {
+            OperationType::X
+            | OperationType::Z
+            | OperationType::CX
+            | OperationType::CZ
+            | OperationType::CCX
+            | OperationType::CCZ
+            | OperationType::Swap => b.ops.push(op),
+            OperationType::R
+            | OperationType::Hmr
+            | OperationType::Register
+            | OperationType::AppendToRegister
+            | OperationType::DebugPrint => {}
+            _ => panic!(
+                "emit_inverse_hmr_safe: non-invertible op kind {:?} inside forward block",
+                op.kind
+            ),
+        }
+    }
+}
+
 fn with_kal_inv_raw<F: FnOnce(&mut B, &[QubitId])>(
     b: &mut B,
     v_in: &[QubitId],
@@ -4037,9 +4065,17 @@ fn with_kal_inv_raw<F: FnOnce(&mut B, &[QubitId])>(
     st.f_flag = b.alloc_qubit();
     st.v_w = b.alloc_qubits(n);
 
-    // Explicit backward pass (uses measurement-based uncompute, saves
-    // ~511 CCX per iteration vs the emit_inverse version).
-    kaliski_backward(b, v_in, &st, p, iters);
+    // Experimental mode: use the exact reversed forward block shape, but skip
+    // HMR/R in the reverse replay. This is heavier than the explicit backward,
+    // but it keeps the specialized prefix and its matching global reverse in a
+    // single contract. The hope is to eliminate the residual phase mismatch.
+    if std::env::var("KAL_BULK3_GENERALIZED_REVERSE").is_ok() {
+        emit_inverse_hmr_safe(b, |b| kaliski_forward(b, v_in, &st, p, iters));
+    } else {
+        // Explicit backward pass (uses measurement-based uncompute, saves
+        // ~511 CCX per iteration vs the emit_inverse version).
+        kaliski_backward(b, v_in, &st, p, iters);
+    }
 
     free_kaliski_state(b, st);
 }
