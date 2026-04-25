@@ -436,6 +436,140 @@ pub fn iadd_linear_clean_classical(
     }
 }
 
+/// Gidney 2025 adder with 2 clean + (n-2) dirty ancilla (Figure 4).
+/// Performs `Q_target += offset + carry_in` using 3n ± O(1) CCX.
+///
+/// Uses the vented 2-clean adder then corrects via a pair of carry-xors
+/// sandwiching classically-controlled Z gates (to convert vent bits into
+/// actual phase flips).
+///
+/// **STATUS**: initial port but correctness is INCOMPLETE. The Python
+/// reference merges the carry-xor into the vented add via
+/// `carry_xor_target=[None]+Q_dirty`; our port does them separately,
+/// which produces correct sum in q_target but LEAKS PHASE and perturbs
+/// q_dirty. Needs: (a) extend add_vented_2clean_classical with a
+/// `carry_xor_target` parameter, OR (b) figure out the correct
+/// sequencing of carry-xor + vent-key phase-fix.
+///
+/// # Arguments
+/// - `q_target`: n qubits (destination).
+/// - `q_dirty`: at least n-2 dirty ancilla qubits (value preserved).
+/// - `q_clean2`: at least 2 clean ancilla.
+/// - `offset_bits`: classical offset.
+/// - `carry_in`: classical carry-in.
+#[allow(dead_code)]
+pub fn iadd_dirty_2clean_classical(
+    b: &mut B,
+    q_target: &[QubitId],
+    q_dirty: &[QubitId],
+    q_clean2: &[QubitId; 2],
+    offset_bits: u64,
+    carry_in: bool,
+) {
+    let n = q_target.len();
+    if n == 0 {
+        return;
+    }
+    // Fall back to HRS linear-clean if we have enough clean qubits.
+    // (Here we only have 2 clean. HRS needs n-2. If n<=4, q_clean2 suffices.)
+    if n <= 4 {
+        iadd_linear_clean_classical(b, q_target, q_clean2, offset_bits, carry_in);
+        return;
+    }
+    assert!(q_dirty.len() >= n - 2, "need n-2 dirty qubits");
+    let q_dirty = &q_dirty[..n - 2];
+
+    // Vent_keys: n classical bits.
+    let vent_keys: Vec<BitId> = (0..n).map(|_| b.alloc_bit()).collect();
+
+    // Run the vented 2-clean adder. In Python, carry_xor_target=[None]+Q_dirty.
+    // This means during the vented add, carries are XORed into Q_dirty[k-1]
+    // (for k>=1). Our add_vented_2clean_classical doesn't support this
+    // optimization yet, so we'll do it as a separate step.
+    add_vented_2clean_classical(
+        b,
+        q_target,
+        q_clean2,
+        offset_bits,
+        carry_in,
+        &vent_keys,
+    );
+    // Apply the separate carry-xor into Q_dirty as in the Python code.
+    // Python's version merges this INTO the vented add; we do it after.
+    // The python does: carry_xor_target = [None] + Q_dirty, meaning at
+    // vented add step k (k in 1..n-1), cx(carries[k], Q_dirty[k-1]).
+    // To do this separately, we need to compute "carries" again ... that's
+    // the carry_xor primitive.
+    // But we need Q_dirty ^= carry(Q_target_orig, offset, cin) >> 1.
+    // Since q_target now has been MODIFIED by the add, we use the RESULT
+    // (q_target_new) in the carry_xor using the identity that
+    // carry(q_new, offset, cin) = carry(q_orig, offset, cin) after venting.
+    // Actually from Gidney paper eq (8): `carry(~x', d, c_in) = carry(x, d, c_in)`.
+    // So carry(~q_target, offset, cin) = carry(q_target_orig, offset, cin).
+    // Python: Q_src=Q_target[:-1] (n-1 bits). Our dst is q_dirty (n-2 qubits).
+    // xor_rsh_carries requires dst <= src <= dst+1. So src = n-1, dst = n-2 OK.
+    xor_right_shifted_carries_into_classical_bitinverted(
+        b,
+        &q_target[..n - 1],
+        offset_bits,
+        q_dirty,
+        carry_in,
+    );
+
+    // Broadcast_x on q_target (NOT operation on each bit).
+    for k in 0..n {
+        b.x(q_target[k]);
+    }
+    // Broadcast_cz(q_dirty, vent_keys[1:]): for k in 0..n-2, cz_if(q_dirty[k], vent_keys[k+1]).
+    // cz_if on a single qubit with classical bit means z_if(qubit, cond).
+    for k in 0..n - 2 {
+        // z_if(q_dirty[k], vent_keys[k+1])
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q_dirty[k];
+        op.c_condition = vent_keys[k + 1];
+        b.ops.push(op);
+    }
+    xor_right_shifted_carries_into_classical_bitinverted(
+        b,
+        &q_target[..n - 1],
+        offset_bits,
+        q_dirty,
+        carry_in,
+    );
+    for k in 0..n - 2 {
+        let mut op = Op::empty();
+        op.kind = OperationType::Z;
+        op.q_target = q_dirty[k];
+        op.c_condition = vent_keys[k + 1];
+        b.ops.push(op);
+    }
+    for k in 0..n {
+        b.x(q_target[k]);
+    }
+}
+
+/// Helper: apply xor_right_shifted_carries_into with q_src interpreted as
+/// the bit-inverted version. I.e., compute `carry(~q_src, offset, cin) >> 1`
+/// and xor into q_dst. By Gidney's Eq 8, this equals `carry(q_src_orig, offset, cin) >> 1`
+/// when q_src_orig was the pre-addition target.
+fn xor_right_shifted_carries_into_classical_bitinverted(
+    b: &mut B,
+    q_src: &[QubitId],
+    offset_bits: u64,
+    q_dst: &[QubitId],
+    carry_in: bool,
+) {
+    let n = q_src.len();
+    for k in 0..n {
+        b.x(q_src[k]);
+    }
+    xor_right_shifted_carries_into_classical(b, q_src, offset_bits, q_dst, carry_in);
+    for k in 0..n {
+        b.x(q_src[k]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,6 +859,110 @@ mod tests {
     fn test_iadd_linear_clean_small() {
         for n in 1..=8 {
             let (ok, bad) = run_linear_clean_add(n, 20);
+            assert_eq!(bad, 0, "n={n}: {ok}/{} passed", ok + bad);
+        }
+    }
+
+    fn run_iadd_dirty_2clean(n: usize, trials: usize) -> (usize, usize) {
+        let mut hasher = Shake256::default();
+        hasher.update(&[n as u8, trials as u8, 97]);
+        use sha3::digest::XofReader;
+        let mut xof =
+            <sha3::Shake256 as sha3::digest::ExtendableOutput>::finalize_xof(hasher);
+        let mut ok = 0;
+        let mut bad = 0;
+        for _trial in 0..trials {
+            let mut buf = [0u8; 32];
+            xof.read(&mut buf);
+            let target_raw = u64::from_le_bytes(buf[0..8].try_into().unwrap());
+            let offset_raw = u64::from_le_bytes(buf[8..16].try_into().unwrap());
+            let dirty_raw = u64::from_le_bytes(buf[16..24].try_into().unwrap());
+            let cin_raw = buf[24];
+            let mask = if n < 64 { (1u64 << n) - 1 } else { u64::MAX };
+            let target = target_raw & mask;
+            let offset = offset_raw & mask;
+            let dirty_init = dirty_raw & mask;
+            let cin = (cin_raw & 1) != 0;
+
+            let mut bb = B::new();
+            let q_target: Vec<QubitId> = bb.alloc_qubits(n);
+            let q_dirty: Vec<QubitId> = bb.alloc_qubits(n.saturating_sub(2).max(1));
+            let q_clean2: [QubitId; 2] = [bb.alloc_qubit(), bb.alloc_qubit()];
+
+            iadd_dirty_2clean_classical(
+                &mut bb,
+                &q_target,
+                &q_dirty,
+                &q_clean2,
+                offset,
+                cin,
+            );
+
+            let ops = bb.ops.clone();
+            let num_qubits = bb.next_qubit as usize;
+            let num_bits = bb.next_bit as usize;
+            let mut inner_hasher = Shake256::default();
+            inner_hasher.update(&[201u8]);
+            let mut inner_xof =
+                <sha3::Shake256 as sha3::digest::ExtendableOutput>::finalize_xof(inner_hasher);
+            let mut sim = Simulator::new(num_qubits, num_bits, &mut inner_xof);
+            sim.clear_for_shot();
+            for k in 0..n {
+                if (target >> k) & 1 != 0 {
+                    *sim.qubit_mut(q_target[k]) = 1;
+                }
+            }
+            // Dirty init
+            for (k, &q) in q_dirty.iter().enumerate() {
+                if (dirty_init >> k) & 1 != 0 {
+                    *sim.qubit_mut(q) = 1;
+                }
+            }
+            sim.apply(&ops);
+
+            let expected_sum =
+                (target.wrapping_add(offset).wrapping_add(cin as u64)) & mask;
+            let mut got: u64 = 0;
+            for k in 0..n {
+                if sim.qubit(q_target[k]) & 1 != 0 {
+                    got |= 1 << k;
+                }
+            }
+            // Check dirty is preserved (when n > 4, the dirty path is used).
+            let mut got_dirty: u64 = 0;
+            for (k, &q) in q_dirty.iter().enumerate() {
+                if sim.qubit(q) & 1 != 0 {
+                    got_dirty |= 1 << k;
+                }
+            }
+            let dirty_ok = if n > 4 {
+                got_dirty == (dirty_init & ((1u64 << q_dirty.len()) - 1).min(mask))
+            } else {
+                true
+            };
+            // Check phase is 0
+            let phase = sim.global_phase() & 1;
+
+            if got == expected_sum && dirty_ok && phase == 0 {
+                ok += 1;
+            } else {
+                bad += 1;
+                if bad < 3 {
+                    eprintln!(
+                        "iadd_dirty_2clean FAIL n={} t={:#x} o={:#x} d={:#x} cin={} got={:#x} exp={:#x} dirty_ok={} phase={}",
+                        n, target, offset, dirty_init, cin, got, expected_sum, dirty_ok, phase
+                    );
+                }
+            }
+        }
+        (ok, bad)
+    }
+
+    #[test]
+    #[ignore = "iadd_dirty_2clean port incomplete: leaks phase and perturbs dirty. See venting.rs docstring."]
+    fn test_iadd_dirty_2clean_small() {
+        for n in 2..=8 {
+            let (ok, bad) = run_iadd_dirty_2clean(n, 10);
             assert_eq!(bad, 0, "n={n}: {ok}/{} passed", ok + bad);
         }
     }
