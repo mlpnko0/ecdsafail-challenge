@@ -711,9 +711,16 @@ while clearing each 16-bit A window immediately:
 live flags + window-local A clear: 1,126,720 CCX, peak 2,780q, phase=0
 ```
 
-The remaining garbage is 560 modular-add reduction flags. This is now the
-sharp replay moonshot: find a way to clean/absorb those flags (possibly during
-reverse denominator/window cleanup) without paying the full `cmp_lt` uncompute.
+The remaining garbage is 560 modular-add reduction flags. The direct recovery
+relation is known: `live_reduction_flag_is_recoverable_from_doubled_output_but_cleanup_is_costly`
+checks that, away from the fast-negation zero representative edge, the flag is
+`odd && (2*out_s mod p) < r_out`. But direct cleanup would need a doubled-output
+copy plus a comparator and uncompute, about `766 CCX/flag`, which is more than
+the `cmp_lt` cost we skipped.
+
+This is now the sharp replay moonshot: find a way to clean/absorb those flags
+(possibly during reverse denominator/window cleanup) without paying the full
+post-halve recovery cost.
 A production replay therefore needs either (a) keep A controls/live flags until
 the end and clean them globally, or (b) fuse the modular average so the same
 flag is recoverable from later state.

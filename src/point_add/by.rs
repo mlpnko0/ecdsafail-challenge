@@ -5646,6 +5646,70 @@ mod tests {
     }
 
     #[test]
+    fn live_reduction_flag_is_recoverable_from_doubled_output_but_cleanup_is_costly() {
+        // Algebra for cleaning a live modular-add reduction flag after the
+        // following halve: for canonical inputs, z = 2*out_s mod p is the
+        // modular-add result, so the reduction flag is (odd && z < addend).
+        // Recovering it directly would require a modular double/copy plus a
+        // full comparator, which costs more than the flag-uncompute we skipped.
+        let p = SECP256K1_P;
+        let mut b = super::super::B::new();
+        let odd = b.alloc_qubit();
+        let a_ctrl = b.alloc_qubit();
+        let red_flag = b.alloc_qubit();
+        let r = b.alloc_qubits(256);
+        let s = b.alloc_qubits(256);
+        emit_scaled_by_controlled_microstep_live_addflag_for_test(&mut b, &r, &s, odd, a_ctrl, red_flag, p);
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let inv2 = (p.wrapping_add(U256::from(1u64))) >> 1usize;
+        let cases = [(false, false, "C"), (true, false, "B"), (true, true, "A")];
+        let mut sx = Sampler::new(b"by-live-flag-recover-r-v1", p);
+        let mut sy = Sampler::new(b"by-live-flag-recover-s-v1", p);
+        let mut mismatches = 0usize;
+        let mut nonzero_mismatches = 0usize;
+        let mut checked = 0usize;
+        for &(odd_v, a_v, name) in &cases {
+            let mut samples = vec![(U256::ZERO, U256::ZERO), (U256::ZERO, sy.next()), (sx.next(), U256::ZERO)];
+            for _ in 0..16 { samples.push((sx.next(), sy.next())); }
+            for (rv, sv) in samples {
+                let (exp_r, exp_s) = match name {
+                    "A" => (sv, mulm(subm(sv, rv, p), inv2, p)),
+                    "B" => (rv, mulm(addm(sv, rv, p), inv2, p)),
+                    "C" => (rv, mulm(sv, inv2, p)),
+                    _ => unreachable!(),
+                };
+                let mut hasher = sha3::Shake128::default();
+                hasher.update(b"by-live-flag-recover-sim-v1");
+                let mut xof = hasher.finalize_xof();
+                let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                if odd_v { *sim.qubit_mut(odd) |= 1; }
+                if a_v { *sim.qubit_mut(a_ctrl) |= 1; }
+                set_slice_u512_by(&mut sim, &r, u256_to_u512_for_by_tests(rv));
+                set_slice_u512_by(&mut sim, &s, u256_to_u512_for_by_tests(sv));
+                sim.apply(&ops);
+                let got_flag = (sim.qubit(red_flag) & 1) != 0;
+                let z = addm(exp_s, exp_s, p);
+                let recovered = odd_v && z < exp_r;
+                if got_flag != recovered {
+                    mismatches += 1;
+                    if !(a_v && rv.is_zero()) {
+                        nonzero_mismatches += 1;
+                    }
+                }
+                checked += 1;
+            }
+        }
+        let direct_cleanup_lb = 255 + 256 + 255; // copy/double output, compare, uncompute doubled copy.
+        eprintln!(
+            "BY live reduction flag recovery: checked={checked}, mismatches={mismatches}, nonzero_mismatches={nonzero_mismatches}, direct_cleanup_lb≈{direct_cleanup_lb} CCX/flag"
+        );
+        assert_eq!(nonzero_mismatches, 0, "canonical nonzero flag recovery relation failed");
+        assert!(direct_cleanup_lb > 2 * 256, "direct cleanup lower bound no longer explains the blocker");
+    }
+
+    #[test]
     fn live_reduction_flag_microstep_hits_replay_target_but_needs_cleanup() {
         let p = SECP256K1_P;
         let mut b = super::super::B::new();
