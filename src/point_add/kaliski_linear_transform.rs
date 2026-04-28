@@ -133,6 +133,10 @@ fn pow2_mod(e: usize) -> U256 {
 }
 
 fn step_linear_canonical(st: &mut LinState) -> Branch {
+    step_linear_canonical_with_flags(st).0
+}
+
+fn step_linear_canonical_with_flags(st: &mut LinState) -> (Branch, u8, u8) {
     let mut m = 0u8;
     if st.f == 1 && st.v == U256::ZERO { m ^= 1; }
     st.f ^= m;
@@ -163,7 +167,7 @@ fn step_linear_canonical(st: &mut LinState) -> Branch {
         core::mem::swap(&mut st.u, &mut st.v);
         core::mem::swap(&mut st.r, &mut st.s);
     }
-    br
+    (br, a, m)
 }
 
 #[test]
@@ -209,6 +213,31 @@ fn dx_tagged_seed_recovers_division_with_negligible_exception() {
         let k_y = add_mod(r_tagged, scale, p); // r + 2^ITERS = k*y
         let quotient = neg_mod(k_y, p).mul_mod(scale_inv, p);
         assert_eq!(quotient, y.mul_mod(x.inv_mod(p).unwrap(), p));
+    }
+}
+
+#[test]
+fn stored_a_and_m_bits_recover_branch_pair() {
+    // If we abandon qrisp's full inverse coefficient `(r,s)` sentinel, one
+    // plausible branch-only cleanup stores the final swap bit `a` in addition
+    // to the existing `m_hist`. The per-step add bit is then not independent:
+    // for active steps, add = !(a xor m); after termination f=0 forces add=0.
+    // This does not solve the 600-scratch target by itself (it still stores
+    // history), but it validates the next branch-only circuit scaffold.
+    for seed in 1..200u64 {
+        let mut st = LinState {
+            u: SECP256K1_P,
+            v: random_element(seed),
+            r: U256::ZERO,
+            s: add_mod(random_element(seed + 10_000), random_element(seed), SECP256K1_P),
+            f: 1,
+        };
+        for _ in 0..ITERS {
+            let (br, a, m) = step_linear_canonical_with_flags(&mut st);
+            assert_eq!(br.a_swap, a == 1);
+            let recovered_add = st.f == 1 && ((a ^ m) == 0);
+            assert_eq!(br.add, recovered_add, "add should be recoverable from stored a,m and post f");
+        }
     }
 }
 

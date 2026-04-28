@@ -4065,6 +4065,27 @@ const ALT_SEED_COMMIT: usize = 24;
 const ALT_SEED_SHOTS: usize = 4096;
 const ALT_SEED_CLASSICAL_LIMIT: usize = 2;
 
+/// Optional side-channel coefficient transform used by the tagged-DIV probe.
+/// It applies the same linear Kaliski coefficient update to an external
+/// `(cr, cs)` pair while the ordinary inverse state still carries the
+/// qrisp sentinel needed to uncompute branch flags.
+fn coeff_channel_cswap(b: &mut B, ctrl: QubitId, cr: &[QubitId], cs: &[QubitId]) {
+    assert_eq!(cr.len(), cs.len());
+    for i in 0..cr.len() {
+        cswap(b, ctrl, cr[i], cs[i]);
+    }
+}
+
+fn coeff_channel_cadd(b: &mut B, p: U256, cr: &[QubitId], cs: &[QubitId], ctrl: QubitId) {
+    cmod_add_qq(b, cs, cr, ctrl, p);
+}
+
+fn coeff_channel_double(b: &mut B, p: U256, cr: &[QubitId]) {
+    // The data coefficient is an arbitrary field element, not the bounded
+    // qrisp inverse coefficient, so the early no-correction shift is invalid.
+    mod_double_inplace_fast(b, cr, p);
+}
+
 /// Specialized real forward primitive for the first few guaranteed-bulk
 /// Kaliski iterations where `f = 1` and `v_w != 0` are known a priori.
 ///
@@ -4085,6 +4106,7 @@ fn kaliski_iteration_bulk_prefix3(
     s: &[QubitId],
     m_i: QubitId,
     iter_idx: usize,
+    coeff: Option<(&[QubitId], &[QubitId])>,
 ) {
     let a_f = b.alloc_qubit();
     let b_f = b.alloc_qubit();
@@ -4154,6 +4176,10 @@ fn kaliski_iteration_bulk_prefix3(
     for j in 0..rs_width_step3 {
         cswap(b, a_f, r[j], s[j]);
     }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_bulk_coeff_step3_cswap");
+        coeff_channel_cswap(b, a_f, cr, cs);
+    }
 
     b.set_phase("kal_bulk_step4");
     // Specialized STEP 4 with add_f = !b_f.
@@ -4207,6 +4233,10 @@ fn kaliski_iteration_bulk_prefix3(
         }
         b.free_vec(&tmp);
     }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_bulk_coeff_step4_add");
+        coeff_channel_cadd(b, p, cr, cs, add_f);
+    }
 
     b.set_phase("kal_bulk_step5");
     b.x(b_f);
@@ -4228,6 +4258,10 @@ fn kaliski_iteration_bulk_prefix3(
     } else {
         mod_double_inplace_fast(b, r, p);
     }
+    if let Some((cr, _cs)) = coeff {
+        b.set_phase("kal_bulk_coeff_step8_double");
+        coeff_channel_double(b, p, cr);
+    }
 
     b.set_phase("kal_bulk_step9_cswap");
     // Late-iter truncation: same uv-width bound as step3.
@@ -4246,6 +4280,10 @@ fn kaliski_iteration_bulk_prefix3(
     };
     for j in 0..rs_width_step9 {
         cswap(b, a_f, r[j], s[j]);
+    }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_bulk_coeff_step9_cswap");
+        coeff_channel_cswap(b, a_f, cr, cs);
     }
 
     b.x(s[0]);
@@ -4270,6 +4308,7 @@ fn kaliski_iteration(
     m_i: QubitId,
     f: QubitId,
     iter_idx: usize,
+    coeff: Option<(&[QubitId], &[QubitId])>,
 ) {
     let n = u.len();
     // Iter-local flags (zero at iter start and iter end): alloc fresh here
@@ -4356,6 +4395,10 @@ fn kaliski_iteration(
     for j in 0..rs_width_step3 {
         cswap(b, a_f, r[j], s[j]);
     }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_coeff_step3_cswap");
+        coeff_channel_cswap(b, a_f, cr, cs);
+    }
 
     b.set_phase("kal_step4");
     // ─── STEP 4 ───
@@ -4426,6 +4469,10 @@ fn kaliski_iteration(
         }
         b.free_vec(&tmp);
     }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_coeff_step4_add");
+        coeff_channel_cadd(b, p, cr, cs, add_f);
+    }
 
     b.set_phase("kal_step5");
     // ─── STEP 5: uncompute add; uncompute b ───
@@ -4459,6 +4506,10 @@ fn kaliski_iteration(
     } else {
         mod_double_inplace_fast(b, r, p);
     }
+    if let Some((cr, _cs)) = coeff {
+        b.set_phase("kal_coeff_step8_double");
+        coeff_channel_double(b, p, cr);
+    }
 
     b.set_phase("kal_step9_cswap");
     // ─── STEP 9: with control(a): swap(u, v_w); swap(r, s) (again) ───
@@ -4471,6 +4522,10 @@ fn kaliski_iteration(
     let rs_width_step9 = if iter_idx + 2 < n { iter_idx + 2 } else { n };
     for j in 0..rs_width_step9 {
         cswap(b, a_f, r[j], s[j]);
+    }
+    if let Some((cr, cs)) = coeff {
+        b.set_phase("kal_coeff_step9_cswap");
+        coeff_channel_cswap(b, a_f, cr, cs);
     }
 
     // ─── STEP 10: uncompute a via `a ^= NOT s[0]` ───
@@ -4605,8 +4660,23 @@ fn free_kaliski_state(b: &mut B, st: KaliskiState) {
 /// `K = 2^{-2n} mod p` and for calling `emit_inverse(kaliski_forward)` to
 /// restore `st.*` to all zero.
 fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iters: usize) {
+    kaliski_forward_with_coeff(b, v_in, st, p, iters, None);
+}
+
+fn kaliski_forward_with_coeff(
+    b: &mut B,
+    v_in: &[QubitId],
+    st: &KaliskiState,
+    p: U256,
+    iters: usize,
+    coeff: Option<(&[QubitId], &[QubitId])>,
+) {
     let n = v_in.len();
     debug_assert!(iters <= st.m_hist.len());
+    if let Some((cr, cs)) = coeff {
+        assert_eq!(cr.len(), n);
+        assert_eq!(cs.len(), n);
+    }
 
     // ─── Init ───
     // u := p (classical load)
@@ -4629,7 +4699,7 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
     let bulk_prefix_iters = bulk_prefix_safe_iters();
     for i in 0..iters {
         if use_bulk_prefix3 && i < bulk_prefix_iters {
-            kaliski_iteration_bulk_prefix3(b, p, &st.u, &st.v_w, &st.r, &st.s, st.m_hist[i], i);
+            kaliski_iteration_bulk_prefix3(b, p, &st.u, &st.v_w, &st.r, &st.s, st.m_hist[i], i, coeff);
         } else {
             kaliski_iteration(
                 b,
@@ -4641,6 +4711,7 @@ fn kaliski_forward(b: &mut B, v_in: &[QubitId], st: &KaliskiState, p: U256, iter
                 st.m_hist[i],
                 st.f_flag,
                 i,
+                coeff,
             );
         }
     }
@@ -5182,6 +5253,17 @@ fn with_kal_inv_raw<F: FnOnce(&mut B, &[QubitId])>(
     iters: usize,
     body: F,
 ) {
+    with_kal_inv_raw_coeff(b, v_in, p, iters, None, body);
+}
+
+fn with_kal_inv_raw_coeff<F: FnOnce(&mut B, &[QubitId])>(
+    b: &mut B,
+    v_in: &[QubitId],
+    p: U256,
+    iters: usize,
+    coeff: Option<(&[QubitId], &[QubitId])>,
+    body: F,
+) {
     let n = v_in.len();
     let mut st = alloc_kaliski_state(b, n, iters);
     let keep_full_state = std::env::var("KAL_KEEP_FULL_STATE").ok().as_deref() == Some("1");
@@ -5196,7 +5278,10 @@ fn with_kal_inv_raw<F: FnOnce(&mut B, &[QubitId])>(
         && std::env::var("KAL_FREE_S").ok().as_deref() != Some("0");
 
     // Forward kaliski. st.r[..n] holds raw = v_in^{-1} * 2^(2n) mod p.
-    kaliski_forward(b, v_in, &st, p, iters);
+    // If coeff is supplied, the same branch controls also transform that
+    // external coefficient pair, but the ordinary qrisp sentinel state remains
+    // available for clean branch-flag uncomputation.
+    kaliski_forward_with_coeff(b, v_in, &st, p, iters, coeff);
 
     if !keep_v {
         b.free_vec(&st.v_w);
@@ -5565,9 +5650,11 @@ fn build_standard_point_add(
     oy: &[BitId],
     p: U256,
 ) {
-    let tagged_div_validate = std::env::var("KAL_TAGGED_DIV_VALIDATE").ok().as_deref() == Some("1");
+    let coeff_channel_div = std::env::var("KAL_TAGGED_DIV_COEFF_CHANNEL").ok().as_deref() == Some("1");
+    let tagged_div_validate = coeff_channel_div
+        || std::env::var("KAL_TAGGED_DIV_VALIDATE").ok().as_deref() == Some("1");
     let pair1_iters = 407;
-    // The tagged validation path changes the op stream / Fiat-Shamir seed;
+    // The tagged validation paths change the op stream / Fiat-Shamir seed;
     // keep pair2 at the prior robust 404 setting to avoid conflating the
     // algebra probe with an iteration-threshold phase cliff.
     let pair2_iters = if tagged_div_validate { 404 } else { 403 };
@@ -5581,27 +5668,59 @@ fn build_standard_point_add(
     }
 
     let lam_cell: std::cell::RefCell<Option<Vec<QubitId>>> = std::cell::RefCell::new(None);
-    b.set_phase("pair1_kaliski_forward");
-    with_kal_inv_raw(b, &tx, p, pair1_iters, |b, inv_raw| {
+    if coeff_channel_div {
+        // Experimental structural path: compute the tagged quotient by carrying
+        // an external coefficient pair `(lam_inner, ty)` through the Kaliski
+        // forward pass. This removes pair1's two schoolbook multiplications;
+        // the ordinary inverse state is still present solely to provide clean
+        // branch controls and to be Bennett-uncomputed afterwards.
         let lam_inner = b.alloc_qubits(N);
-        b.set_phase("pair1_mul1");
-        mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
-        b.set_phase("pair1_halve");
-        for _ in 0..pair1_iters {
-            mod_halve_inplace_fast(b, &lam_inner, p);
-        }
-        b.set_phase("pair1_mul2");
-        mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
-        if tagged_div_validate {
-            // lam_inner = -(lambda+1) after consuming tagged ty=(dy+dx).
-            // Add 1 to recover the normal lam_inner=-lambda expected by the
-            // remaining point-add scaffold.
-            b.set_phase("tagged_div_untag_lam");
-            mod_add_qc(b, &lam_inner, U256::from(1u64), p);
-        }
-        b.set_phase("pair1_kaliski_backward");
-        *lam_cell.borrow_mut() = Some(lam_inner);
-    });
+        let lam_coeff = lam_inner.clone();
+        let ty_coeff: Vec<QubitId> = ty.to_vec();
+        b.set_phase("pair1_kaliski_forward_coeff_channel");
+        with_kal_inv_raw_coeff(
+            b,
+            &tx,
+            p,
+            pair1_iters,
+            Some((&lam_coeff, &ty_coeff)),
+            |b, _inv_raw| {
+                b.set_phase("pair1_coeff_channel_halve");
+                for _ in 0..pair1_iters {
+                    mod_halve_inplace_fast(b, &lam_inner, p);
+                }
+                // lam_inner = -(lambda+1) after consuming tagged ty=(dy+dx).
+                // Add 1 to recover the normal lam_inner=-lambda expected by
+                // the remaining point-add scaffold.
+                b.set_phase("pair1_coeff_channel_untag_lam");
+                mod_add_qc(b, &lam_inner, U256::from(1u64), p);
+                b.set_phase("pair1_kaliski_backward");
+                *lam_cell.borrow_mut() = Some(lam_inner);
+            },
+        );
+    } else {
+        b.set_phase("pair1_kaliski_forward");
+        with_kal_inv_raw(b, &tx, p, pair1_iters, |b, inv_raw| {
+            let lam_inner = b.alloc_qubits(N);
+            b.set_phase("pair1_mul1");
+            mod_mul_write_into_zero_acc_schoolbook(b, &lam_inner, &ty, inv_raw, p);
+            b.set_phase("pair1_halve");
+            for _ in 0..pair1_iters {
+                mod_halve_inplace_fast(b, &lam_inner, p);
+            }
+            b.set_phase("pair1_mul2");
+            mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
+            if tagged_div_validate {
+                // lam_inner = -(lambda+1) after consuming tagged ty=(dy+dx).
+                // Add 1 to recover the normal lam_inner=-lambda expected by the
+                // remaining point-add scaffold.
+                b.set_phase("tagged_div_untag_lam");
+                mod_add_qc(b, &lam_inner, U256::from(1u64), p);
+            }
+            b.set_phase("pair1_kaliski_backward");
+            *lam_cell.borrow_mut() = Some(lam_inner);
+        });
+    }
     let lam: Vec<QubitId> = lam_cell.into_inner().expect("lam set");
 
     mod_mul_sub_qq(b, &tx, &lam, &lam, p);

@@ -416,6 +416,42 @@ It is intentionally a validation path, not an optimization: it adds ~6k Toffoli
 because it still uses the old Bennett-clean Kaliski and m_hist. Its importance
 is that the tag algebra works in the real circuit.
 
+A stronger default-off implementation was then wired behind
+`KAL_TAGGED_DIV_COEFF_CHANNEL=1`: while ordinary Kaliski is running, it carries
+an external coefficient pair `(lam, ty)` through the same branch controls. This
+computes the tagged quotient directly and consumes `ty` to zero, removing
+pair1's two schoolbook multiplications from the scaffold. It passes the real
+harness, but it **invalidates the naive side-channel version as a SOTA path**:
+
+```text
+KAL_TAGGED_DIV_COEFF_CHANNEL=1 cargo run --release -- --note coeff-channel-div
+avg_toffoli = 4,672,021
+qubits      = 2,977
+classical/phase/ancilla failures = 0
+```
+
+Why it loses:
+
+- the external coefficient channel is live during Kaliski, adding a full
+  256-qubit `lam` register at the Kaliski peak;
+- each Kaliski iteration needs data-channel cswaps, a controlled modular add,
+  and a modular double;
+- the old inverse-state `(r,s)` and `m_hist` are still present just to clean
+  qrisp branch flags and Bennett-uncompute the denominator state.
+
+So the tag algebra is good, but the naive “parallel coefficient side channel”
+is too wide and too expensive. The next reduction must remove the ordinary
+inverse coefficient registers/history rather than run beside them.
+
+A small positive result for that next scaffold is captured by
+`stored_a_and_m_bits_recover_branch_pair`: if the final swap bit `a` is stored
+alongside the existing `m_hist`, then `add = f & !(a xor m)` recovers the full
+branch pair. This suggests a branch-only Kaliski generator can replace the full
+ordinary `(r,s)` inverse sentinel with an `a_hist` bitstream. That saves only
+~105 qubits net (`r,s` = 512 removed, `a_hist` = 407 added) and still stores
+history, so it is not the final 600-scratch answer, but it is a concrete next
+circuit scaffold to test.
+
 Therefore a self-cleaning DIV now needs:
 
 - a **derived exact/near-exact predicate** over full `(u,v,r,s)` that is much

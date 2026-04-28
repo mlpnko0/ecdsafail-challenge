@@ -96,7 +96,7 @@ fn build_generic_step(iter_idx: usize) -> StepCircuit {
     let s = b.alloc_qubits(N);
     let m = b.alloc_qubit();
     let f = b.alloc_qubit();
-    kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m, f, iter_idx);
+    kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m, f, iter_idx, None);
     StepCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
@@ -118,7 +118,7 @@ fn build_special_step(iter_idx: usize) -> StepCircuit {
     let s = b.alloc_qubits(N);
     let m = b.alloc_qubit();
     let f = b.alloc_qubit();
-    kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m, iter_idx);
+    kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m, iter_idx, None);
     StepCircuit {
         ops: b.ops,
         num_qubits: b.next_qubit as usize,
@@ -141,7 +141,7 @@ fn build_special_three_steps() -> StepCircuit {
     let f = b.alloc_qubit();
     let m_hist = b.alloc_qubits(3);
     for i in 0..3 {
-        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
+        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i, None);
     }
     StepCircuit {
         ops: b.ops,
@@ -165,7 +165,7 @@ fn build_generic_prefix(k: usize) -> PrefixCircuit {
     let f = b.alloc_qubit();
     let m_hist = b.alloc_qubits(k);
     for i in 0..k {
-        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i, None);
     }
     PrefixCircuit {
         ops: b.ops,
@@ -189,7 +189,7 @@ fn build_special_prefix(k: usize) -> PrefixCircuit {
     let f = b.alloc_qubit();
     let m_hist = b.alloc_qubits(k);
     for i in 0..k {
-        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
+        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i, None);
     }
     PrefixCircuit {
         ops: b.ops,
@@ -213,7 +213,7 @@ fn build_generic_prefix_fb(k: usize) -> PrefixCircuit {
     let f = b.alloc_qubit();
     let m_hist = b.alloc_qubits(k);
     for i in 0..k {
-        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+        kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i, None);
     }
     for i in (0..k).rev() {
         kaliski_iteration_backward(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
@@ -240,7 +240,7 @@ fn build_special_prefix_fb(k: usize) -> PrefixCircuit {
     let f = b.alloc_qubit();
     let m_hist = b.alloc_qubits(k);
     for i in 0..k {
-        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i);
+        kaliski_iteration_bulk_prefix3(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], i, None);
     }
     for i in (0..k).rev() {
         kaliski_iteration_bulk_prefix3_backward(
@@ -582,7 +582,7 @@ mod tests {
         let f = b.alloc_qubit();
         let m_hist = b.alloc_qubits(3);
         for i in 0..3 {
-            kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i);
+            kaliski_iteration(&mut b, SECP256K1_P, &u, &v, &r, &s, m_hist[i], f, i, None);
         }
         let generic3 = StepCircuit {
             ops: b.ops,
@@ -644,7 +644,7 @@ mod tests {
         let fg = bg.alloc_qubit();
         let mhg = bg.alloc_qubits(3);
         for i in 0..3 {
-            kaliski_iteration(&mut bg, SECP256K1_P, &ug, &vg, &rg, &sg, mhg[i], fg, i);
+            kaliski_iteration(&mut bg, SECP256K1_P, &ug, &vg, &rg, &sg, mhg[i], fg, i, None);
         }
         for i in (0..3).rev() {
             super::super::kaliski_iteration_backward(
@@ -679,7 +679,7 @@ mod tests {
         let fs = bs.alloc_qubit();
         let mhs = bs.alloc_qubits(3);
         for i in 0..3 {
-            kaliski_iteration_bulk_prefix3(&mut bs, SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i);
+            kaliski_iteration_bulk_prefix3(&mut bs, SECP256K1_P, &us, &vs, &rs, &ss, mhs[i], i, None);
         }
         for i in (0..3).rev() {
             super::super::kaliski_iteration_bulk_prefix3_backward(
