@@ -935,10 +935,23 @@ compute+uncompute denominator:                ≈1,837,920 CCX
 peak:                                           1128q
 ```
 
-This is far above the fixed-matrix denominator target (~8k/window). Therefore
-the required next object is not a per-bit full-width window replay; it is a
-selected/fixed-matrix denominator window with algebraic sharing, or a consumed-
-denominator schedule that avoids full restore.
+This is far above the fixed-matrix denominator target. The positive target is
+now quantified by `tapered_fixed_matrix_denominator_budget_is_sota_shaped_if_selection_solved`:
+assuming each 16-step matrix is already selected, and the active 2-adic width
+shrinks from 560 by 16 bits per window, the existing fixed scaled-matrix
+replacement costs
+
+```text
+35-window denominator compute       ≈ 303,828 CCX mean
+compute+uncompute                   ≈ 607,657 CCX mean
+max sampled compute                 = 329,595 CCX
+```
+
+The peak of the naive standalone cost circuit is high (`3424q`) because it
+allocates old/new row buffers, but the Toffoli economics are SOTA-shaped. The
+required next object is therefore very precise: a **selected/fixed-matrix
+window update** with algebraic sharing and production scheduling, not per-bit
+full-width replay.
 
 The first savings-capable implementation must either:
 

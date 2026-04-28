@@ -4082,6 +4082,53 @@ mod tests {
     }
 
     #[test]
+    fn tapered_fixed_matrix_denominator_budget_is_sota_shaped_if_selection_solved() {
+        // Positive moonshot target: if each 16-step denominator window is
+        // applied as the already-known fixed scaled matrix replacement, and
+        // the active 2-adic width drops by 16 bits per window, the denominator
+        // side is far cheaper than per-bit replay. This intentionally assumes
+        // the matrix/pattern selector is already available; it quantifies the
+        // arithmetic target for a selected-window implementation.
+        const W: usize = 16;
+        const START_WIDTH: usize = 560;
+        let mut sampler = Sampler::new(b"by-tapered-fixed-den-budget-v1", SECP256K1_P);
+        let samples = 8usize;
+        let mut total_compute = 0usize;
+        let mut max_compute = 0usize;
+        let mut max_peak = 0u32;
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            let mut sample_ccx = 0usize;
+            for win in 0..35 {
+                let mut bits = Vec::with_capacity(W);
+                let d0 = delta;
+                for _ in 0..W {
+                    bits.push(g.bit0());
+                    divstep_sint_state(&mut delta, &mut f, &mut g);
+                }
+                let m = matrix_from_branch_bits(d0, &bits);
+                let width = START_WIDTH - win * W;
+                let mut b = super::super::B::new();
+                emit_scaled_pair_update_with_cleanup_for_cost(&mut b, m, width, W);
+                sample_ccx += count_ccx(&b.ops);
+                max_peak = max_peak.max(b.peak_qubits);
+            }
+            total_compute += sample_ccx;
+            max_compute = max_compute.max(sample_ccx);
+        }
+        let mean_compute = total_compute as f64 / samples as f64;
+        let mean_compute_uncompute = 2.0 * mean_compute;
+        eprintln!(
+            "BY tapered fixed-matrix denominator budget: mean_compute≈{mean_compute:.0}, max_compute={max_compute}, mean_compute_uncompute≈{mean_compute_uncompute:.0}, max_peak={max_peak}q"
+        );
+        assert!(mean_compute < 450_000.0, "fixed-matrix tapered denominator no longer beats per-bit replay");
+        assert!(mean_compute_uncompute < 900_000.0, "denominator compute+uncompute too large for BY SOTA budget");
+    }
+
+    #[test]
     fn full_width_denominator_microstep_window_replay_is_not_enough() {
         // Given branch controls, the full denominator can be updated by the
         // same swap/neg/add/halve skeleton as the lowword generator. Measure a
