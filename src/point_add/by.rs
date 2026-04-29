@@ -2546,6 +2546,40 @@ mod tests {
     }
 
     #[test]
+    fn ratio_a_step_serial_inverse_budget_is_too_large() {
+        // A bit-serial triangular inverse avoids large scratch, but each A step
+        // still needs convolution work across the remaining active width.  Use
+        // sum(t^2/2) over real A-step positions as a crude lower-order gate
+        // proxy.  It is already multi-million before reversible cleanup and
+        // before the modular replay itself.
+        let samples = 64usize;
+        let mut sampler = Sampler::new(b"by-ratio-a-serial-budget-v1", SECP256K1_P);
+        let mut total_proxy = 0f64;
+        let mut max_proxy = 0f64;
+        for _ in 0..samples {
+            let x = sampler.next();
+            let mut delta = 1i64;
+            let mut f = SInt::from_u(SECP256K1_P);
+            let mut g = SInt::from_u(x);
+            let mut proxy = 0f64;
+            for step in 0..(35 * 16) {
+                let t = (35 * 16 - step) as f64;
+                if delta > 0 && g.bit0() {
+                    proxy += 0.5 * t * t;
+                }
+                divstep_sint_state(&mut delta, &mut f, &mut g);
+            }
+            total_proxy += proxy;
+            max_proxy = max_proxy.max(proxy);
+        }
+        let mean_proxy = total_proxy / samples as f64;
+        eprintln!(
+            "BY ratio serial A-inverse proxy: mean_t2_over2={mean_proxy:.0}, max_t2_over2={max_proxy:.0}"
+        );
+        assert!(mean_proxy > 2_000_000.0);
+    }
+
+    #[test]
     fn ratio_a_step_is_inverse_dense_and_common() {
         // The 560-bit full-ratio selector solves state size, but not
         // automatically gate cost.  Its A update contains a modular inverse of

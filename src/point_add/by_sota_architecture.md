@@ -173,6 +173,9 @@ for a toy 16-bit odd `h`, one high output bit of the A map has ANF degree 14 and
 7268 nonzero monomials out of 32768; real 560-step traces average about 132 A
 steps (max 149 over 64 samples).  Therefore the full-ratio selector is
 state-optimal but not yet gate-optimal; a naive per-A modular inverse is dead.
+`ratio_a_step_serial_inverse_budget_is_too_large` also kills the obvious
+low-scratch serial inverse: summing `t^2/2` over real A-step positions gives a
+mean proxy of about 7.31M operations (max 8.89M) before cleanup.
 The next architectural question is whether to implement the ratio stream with a
 windowed/Möbius method, a cheap inverse-maintenance invariant, or fall back to a
 larger linear carry state.  A first windowed check,
