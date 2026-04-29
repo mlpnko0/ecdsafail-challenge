@@ -126,7 +126,7 @@ inverse.  A better state/gate compromise is to keep the ordinary 256-bit BY
 integer denominator pair `(f,g)` and store consumed raw branch bits in the high
 zero slack that appears as the pair shrinks.
 
-`denominator_pair_plus_49_sidecar_can_hold_raw_history_on_samples` checks 1024
+`denominator_pair_plus_49_sidecar_can_hold_raw_history_on_samples` checks 8192
 sampled secp256k1 denominators over the 560-step schedule:
 
 ```text

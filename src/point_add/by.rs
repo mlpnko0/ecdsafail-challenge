@@ -2566,7 +2566,7 @@ mod tests {
         // as the pair shrinks, with a tiny sidecar for the initial lag.  Real
         // traces need at most 49 extra raw-history bits over the pair slack in
         // this sampled check, matching the 560-step vs 511-slack intuition.
-        let samples = 1024usize;
+        let samples = 8192usize;
         let mut sampler = Sampler::new(b"by-pair-slack-history-v1", SECP256K1_P);
         let mut worst_deficit = 0isize;
         let mut max_converge = 0usize;
