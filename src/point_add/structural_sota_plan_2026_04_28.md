@@ -1608,6 +1608,14 @@ canonical square-root phase is dense/high-degree on toy primes (`n=8,10,12`
 densities `126/256`, `502/1024`, `2072/4096`, degree up to full).  For
 secp256k1 this is an exponentiation, not a cleanup primitive.  Kill it.
 
+Coefficient-transform refinement checked: a single Kaliski coefficient pair
+cannot both preserve `x` and expose `y/x` by just using a constant tag.  If
+`r0=ρ` and `s0=y+β`, the outputs are `s=ρx` and
+`r=k*y+(ρa+βk)`.  `single_coefficient_pair_cannot_preserve_x_and_expose_quotient_by_constant_tag`
+shows sampled `(a,k,1)` are affine-non-collinear, so no constants `ρ,β,C` make
+`ρa+βk=C`.  A one-pair DIV still needs a data-dependent `a(x)` cancellation or
+a second channel.
+
 Coordinate-model escape check: `efficient_curve_model_transforms_need_missing_torsion`
 records that secp256k1's prime-order group has `order mod 2 = 1` and
 `order mod 3 = 1`.  Base-field Montgomery/Edwards models need rational

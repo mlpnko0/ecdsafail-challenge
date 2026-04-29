@@ -192,6 +192,40 @@ fn coefficient_transform_shape() {
 }
 
 #[test]
+fn single_coefficient_pair_cannot_preserve_x_and_expose_quotient_by_constant_tag() {
+    // Try the most tempting one-pair DIV rescue.  Set r0=ρ (nonzero constant)
+    // so the lower output s=ρ*x preserves the denominator while seed
+    // s0=y+β.  The upper output is
+    //     r = k*y + (ρ*a + β*k).
+    // If the parenthesized contaminant were a known constant, one coefficient
+    // pair would simultaneously expose y/x and keep x, fitting the ~600q
+    // target.  This requires an affine relation ρ*a(x)+β*k(x)=C across all x.
+    // Three sampled transforms already make (a,k,1) non-collinear, killing all
+    // constant-tag/constant-r0 variants of this rescue.
+    let p = SECP256K1_P;
+    let mut pts = Vec::new();
+    for seed in 1..=3u64 {
+        let x = random_element(seed);
+        let seq = branch_sequence(x, ITERS);
+        let (a, lower) = apply_coeffs(&seq, U256::from(1u64), U256::ZERO);
+        let (k, zero) = apply_coeffs(&seq, U256::ZERO, U256::from(1u64));
+        assert_eq!(lower, x);
+        assert_eq!(zero, U256::ZERO);
+        pts.push((a, k));
+    }
+    let (a0, k0) = pts[0];
+    let (a1, k1) = pts[1];
+    let (a2, k2) = pts[2];
+    let da10 = sub_mod(a1, a0, p);
+    let dk10 = sub_mod(k1, k0, p);
+    let da20 = sub_mod(a2, a0, p);
+    let dk20 = sub_mod(k2, k0, p);
+    let det = sub_mod(da10.mul_mod(dk20, p), da20.mul_mod(dk10, p), p);
+    eprintln!("constant-tag coefficient-pair relation determinant = {det:#x}");
+    assert!(!det.is_zero(), "sampled (a,k) were affine-collinear; constant-tag DIV rescue may exist");
+}
+
+#[test]
 fn dx_tagged_seed_recovers_division_with_negligible_exception() {
     // Approximate tolerance reopens the self-cleaning DIV route. Seed the
     // coefficient with (y + x) instead of y. Then

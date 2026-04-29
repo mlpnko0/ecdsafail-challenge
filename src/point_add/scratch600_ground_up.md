@@ -201,6 +201,22 @@ These are structural, not micro. Any one of them could delete the second
 inversion and land near 2.5M Toffoli. If all fail, two-inversion SOTA must come
 from jumped/windowed Kaliski instead.
 
+A tempting refinement of item 1 was tested in
+`single_coefficient_pair_cannot_preserve_x_and_expose_quotient_by_constant_tag`.
+Use a nonzero constant `r0=ρ` so the lower output `s=ρx` preserves the
+denominator, and seed `s0=y+β`.  The upper output is
+
+```text
+r = k*y + (ρ*a + β*k)
+```
+
+If `ρ*a+β*k` were a known constant, one coefficient pair would simultaneously
+keep `x` and expose `y/x`.  Three sampled transforms already make `(a,k,1)`
+affine-non-collinear (determinant nonzero), killing every constant-tag /
+constant-`r0` version of this rescue.  Preserving `x` and getting a clean
+quotient needs either a second coefficient channel or a data-dependent way to
+cancel `a(x)`.
+
 ## 7. The real primitive we need: in-place modular division
 
 The low-qubit point-add can be phrased around one primitive:
