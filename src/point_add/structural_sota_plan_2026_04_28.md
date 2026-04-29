@@ -1601,7 +1601,14 @@ actual in-place multiply must phase-correct in the surviving `(x,z)` frame.
 31032/65536 density for `p=251`, so the structured history becomes quotient-like
 again after old-y is gone.  Kill this primitive too.
 
-Fourth primitive/global attempt: compute the affine output out-of-place, X-measure
+Fourth primitive attempt: preserve enough denominator information to recover
+`λ` from `λ² = Rx + dx + 2Qx` instead of a second division.  This just asks for
+square root.  `lambda_square_cleanup_would_require_dense_sqrt_phase` shows the
+canonical square-root phase is dense/high-degree on toy primes (`n=8,10,12`
+densities `126/256`, `502/1024`, `2072/4096`, degree up to full).  For
+secp256k1 this is an exponentiation, not a cleanup primitive.  Kill it.
+
+Fifth primitive/global attempt: compute the affine output out-of-place, X-measure
 the old point, and correct phase using `P = R - Q`.  The toy test
 `top_level_mbuc_of_old_point_requires_dense_point_subtraction_phase` shows the
 phase oracle for a mask of old point bits as a function of `(R_x,R_y)` has degree

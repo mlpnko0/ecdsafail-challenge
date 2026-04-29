@@ -1193,6 +1193,64 @@ mod tests {
         sizes
     }
 
+    fn sqrt_phase_anf_stats_for_lambda_cleanup_test(n: usize, p: u16, mask: u16) -> (usize, usize) {
+        let size = 1usize << n;
+        let mut sqrt = vec![0u16; p as usize];
+        let mut seen = vec![false; p as usize];
+        for y in 0..p {
+            let a = mul_mod_u16_for_phase_test(y, y, p) as usize;
+            let neg_y = if y == 0 { 0 } else { p - y };
+            let canonical = y.min(neg_y);
+            if !seen[a] || canonical < sqrt[a] {
+                sqrt[a] = canonical;
+                seen[a] = true;
+            }
+        }
+        let mut anf = vec![0u8; size];
+        for x in 0..size {
+            let y = if x < p as usize { sqrt[x] } else { 0 };
+            anf[x] = ((y & mask).count_ones() & 1) as u8;
+        }
+        for bit in 0..n {
+            for idx in 0..size {
+                if (idx & (1usize << bit)) != 0 {
+                    anf[idx] ^= anf[idx ^ (1usize << bit)];
+                }
+            }
+        }
+        let density = anf.iter().filter(|&&c| c != 0).count();
+        let degree = anf
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
+            .max()
+            .unwrap_or(0);
+        (degree, density)
+    }
+
+    #[test]
+    fn lambda_square_cleanup_would_require_dense_sqrt_phase() {
+        // Another one-Kaliski escape: preserve enough old denominator data so
+        // that after Rx is known we know λ² = Rx + dx + 2Qx, then recover λ
+        // by a square root instead of a second division.  On p≡3 mod 4 this is
+        // an exponentiation; as a Boolean phase/function it is already dense on
+        // toy fields.  This is not the missing low-cost cleanup.
+        let cases = [
+            (8usize, 251u16, 0b1010_0101u16),
+            (10usize, 1021u16, 0b10_1001_0101u16),
+            (12usize, 4093u16, 0b1010_0101_0101u16),
+        ];
+        for &(n, p, mask) in &cases {
+            let (degree, density) = sqrt_phase_anf_stats_for_lambda_cleanup_test(n, p, mask);
+            let table = 1usize << n;
+            eprintln!(
+                "canonical sqrt phase for lambda cleanup: n={n}, p={p}, degree={degree}, density={density}/{table}"
+            );
+            assert!(degree + 1 >= n);
+            assert!(density > table / 3);
+        }
+    }
+
     #[test]
     fn destructive_montgomery_reverse_trellis_needs_field_sized_state() {
         // Global uniqueness of y from (x,z) does not by itself make the

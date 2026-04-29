@@ -765,6 +765,29 @@ The frontier doubles every step until it saturates at `2p`.  The final condition
 `t0=0` is global/nonlocal; enforcing it is just the dense quotient/inverse oracle
 again.  So destructive Montgomery is not rescued by small-state reverse decoding.
 
+### Attempt E6: recover λ from λ² instead of a second division
+
+A different one-Kaliski cleanup idea is to preserve enough old denominator data
+that, once `Rx` is known, we know
+
+```text
+λ² = Rx + dx + 2Qx
+```
+
+Then perhaps `λ` could be cleared/recovered by square root rather than by the
+second inverse `(Qy+Ry)/(Qx-Rx)`.  `lambda_square_cleanup_would_require_dense_sqrt_phase`
+checks the cheap version on toy primes.  The canonical square-root phase is
+already dense/high-degree:
+
+```text
+n=8  p=251   degree=8/8   density=126/256
+n=10 p=1021  degree=9/10  density=502/1024
+n=12 p=4093  degree=12/12 density=2072/4096
+```
+
+For secp256k1 (`p≡3 mod 4`) square root is an exponentiation anyway.  This is
+not a low-cost substitute for the second division or for an in-place multiply.
+
 ## 12. Attempt F: absorb Kaliski's scale by pre-scaling the denominator
 
 Kaliski exposes a raw coefficient of the form
