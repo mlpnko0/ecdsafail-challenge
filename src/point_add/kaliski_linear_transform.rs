@@ -1078,6 +1078,110 @@ fn toy_curve_restricted_mod2_sidecar_best_bits(
     best
 }
 
+fn toy_hash_sidecar_update(h: u64, bits: usize, br: Branch) -> u64 {
+    if bits == 0 { return 0; }
+    let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
+    let rotated = ((h << 1) | (h >> (bits - 1))) & mask;
+    let idx = (br.a_swap as usize) * 2 + br.add as usize;
+    let constants = [1u64, 3u64, 5u64, 7u64];
+    rotated ^ (constants[idx] & mask)
+}
+
+fn toy_curve_restricted_hash_sidecar_conflicts(n: usize, p: u64, bits: usize) -> (usize, usize, usize, usize) {
+    use std::collections::BTreeMap;
+    type Key = (usize, u64, u64, u64, u64, u8, u64);
+    let q = toy_first_curve_point(p);
+    let roots = toy_sqrt_buckets(p);
+    let mut seen: BTreeMap<Key, Branch> = BTreeMap::new();
+    let mut conflicts = 0usize;
+    let mut total = 0usize;
+    let mut support = 0usize;
+    for px in 0..p {
+        let rhs = toy_curve_rhs(px, p);
+        for &py in &roots[rhs as usize] {
+            let dx = (px + p - q.0) % p;
+            let dy = (py + p - q.1) % p;
+            if dx == 0 { continue; }
+            let tag = (dx + dy) % p;
+            if tag == 0 { continue; }
+            support += 1;
+            let mut st = ToyLinState { u: p, v: dx, r: 0, s: tag, f: 1 };
+            let mut h = 0u64;
+            for iter in 0..(2 * n - 1) {
+                let br = toy_step_linear_canonical(&mut st, p);
+                h = toy_hash_sidecar_update(h, bits, br);
+                let key = (iter, st.u, st.v, st.r, st.s, st.f, h);
+                if let Some(prev) = seen.insert(key, br) {
+                    if prev != br { conflicts += 1; }
+                }
+                total += 1;
+            }
+        }
+    }
+    (conflicts, total, seen.len(), support)
+}
+
+fn toy_hash_sidecar_decoder_anf_stats(n: usize, p: u64, bits: usize, decode_add: bool) -> (usize, usize, usize) {
+    // Full-domain branch decoder for the rolling-hash sidecar.  Invalid states
+    // map to zero, matching the other dense-phase probes in this file.
+    assert!(4 * n + 1 + bits <= 24, "truth table kept modest");
+    use std::collections::BTreeMap;
+    type Key = (u64, u64, u64, u64, u8, u64);
+    let q = toy_first_curve_point(p);
+    let roots = toy_sqrt_buckets(p);
+    let mut decoder: BTreeMap<Key, u8> = BTreeMap::new();
+    let mut conflicts = 0usize;
+    for px in 0..p {
+        let rhs = toy_curve_rhs(px, p);
+        for &py in &roots[rhs as usize] {
+            let dx = (px + p - q.0) % p;
+            let dy = (py + p - q.1) % p;
+            if dx == 0 { continue; }
+            let tag = (dx + dy) % p;
+            if tag == 0 { continue; }
+            let mut st = ToyLinState { u: p, v: dx, r: 0, s: tag, f: 1 };
+            let mut h = 0u64;
+            for _iter in 0..(2 * n - 1) {
+                let br = toy_step_linear_canonical(&mut st, p);
+                h = toy_hash_sidecar_update(h, bits, br);
+                let key = (st.u, st.v, st.r, st.s, st.f, h);
+                let value = if decode_add { br.add as u8 } else { br.a_swap as u8 };
+                if let Some(prev) = decoder.insert(key, value) {
+                    if prev != value { conflicts += 1; }
+                }
+            }
+        }
+    }
+    assert_eq!(conflicts, 0, "hash sidecar decoder conflicts; increase bits");
+    let vars = 4 * n + 1 + bits;
+    let size = 1usize << vars;
+    let mut anf = vec![0u8; size];
+    for (&(u, v, r, s, f, h), &value) in decoder.iter() {
+        let idx = (u as usize)
+            | ((v as usize) << n)
+            | ((r as usize) << (2 * n))
+            | ((s as usize) << (3 * n))
+            | ((f as usize) << (4 * n))
+            | ((h as usize) << (4 * n + 1));
+        if idx < size { anf[idx] = value; }
+    }
+    for bit in 0..vars {
+        for idx in 0..size {
+            if (idx & (1usize << bit)) != 0 {
+                anf[idx] ^= anf[idx ^ (1usize << bit)];
+            }
+        }
+    }
+    let density = anf.iter().filter(|&&c| c != 0).count();
+    let degree = anf
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &c)| if c != 0 { Some(i.count_ones() as usize) } else { None })
+        .max()
+        .unwrap_or(0);
+    (degree, density, decoder.len())
+}
+
 fn toy_unreduced_coeff_highbit_phase_anf_stats(n: usize, p: u64, bit_shift: usize) -> (usize, usize) {
     assert!(n <= 10, "truth table kept small");
     let vars = 2 * n;
@@ -1391,6 +1495,39 @@ fn implementable_curve_sidecar_still_extrapolates_over_88q_slack() {
     println!("METRIC curve_mod2_sidecar_slack_bits=88");
     assert!(n16_lane_bits <= 7, "candidate sidecar search regressed on n=16");
     assert!(linear_extrapolated_pair_bits > 88, "simple sidecar would fit 88q slack; revisit folded Kaliski");
+}
+
+#[test]
+fn rolling_hash_sidecar_is_state_small_but_decoder_dense() {
+    // A natural nonlinear sidecar idea is to keep only a reversible rolling
+    // hash of the Kaliski branch stream.  The update can be made essentially
+    // Toffoli-free (CNOT/LFSR plus branch-controlled xor constants), and on
+    // curve-supported toy inputs it indeed separates local poststate branch
+    // collisions with very few bits.  But this is not automatically a circuit:
+    // reverse execution must compute the previous branch from
+    // (u,v,r,s,f,hash).  The induced branch decoder is a dense/high-degree
+    // arbitrary membership function, so the hash is just compressed history
+    // without a cheap pop operation.
+    let cases = [(4usize, 13u64, 1usize), (5, 31, 3), (6, 61, 4), (8, 251, 3)];
+    for &(n, p, bits) in &cases {
+        let (conflicts, total, states, support) = toy_curve_restricted_hash_sidecar_conflicts(n, p, bits);
+        eprintln!(
+            "rolling hash Kaliski sidecar: n={n}, p={p}, bits={bits}, conflicts={conflicts}, states={states}, total={total}, support={support}"
+        );
+        assert_eq!(conflicts, 0, "rolling hash failed to disambiguate toy curve support");
+        if n == 8 {
+            println!("METRIC rolling_hash_sidecar_bits_n8={bits}");
+        }
+    }
+    let (a_degree, a_density, a_support) = toy_hash_sidecar_decoder_anf_stats(4, 13, 1, false);
+    let (add_degree, add_density, add_support) = toy_hash_sidecar_decoder_anf_stats(4, 13, 1, true);
+    eprintln!(
+        "rolling hash branch decoder ANF: a_degree={a_degree}, a_density={a_density}/262144, add_degree={add_degree}, add_density={add_density}/262144, supports=({a_support},{add_support})"
+    );
+    println!("METRIC rolling_hash_decoder_add_degree_n4={add_degree}");
+    println!("METRIC rolling_hash_decoder_add_density_n4={add_density}");
+    assert!(a_degree >= 17 && add_degree >= 17);
+    assert!(add_density > 25_000);
 }
 
 #[test]
