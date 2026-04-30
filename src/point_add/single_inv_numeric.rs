@@ -4026,6 +4026,101 @@ mod tests {
         emit_plusminus_inplace_step_inverse_for_test(b, u, v, cu, cv, active, hist, spill, flag, one);
     }
 
+    fn emit_plusminus_recover_direction_from_coeff_divisibility_controlled_for_test(
+        b: &mut super::super::B,
+        cu: &[super::super::QubitId],
+        hist: &[super::super::QubitId],
+        ctrl: super::super::QubitId,
+        flag: super::super::QubitId,
+    ) {
+        let bad = b.alloc_qubit();
+        let div = b.alloc_qubit();
+        emit_plusminus_low_unary_any_one_into_for_test(b, cu, hist, bad);
+        b.x(div);
+        b.cx(bad, div); // div = low k bits of cu are all zero.
+        b.ccx(ctrl, div, flag);
+        b.cx(bad, div);
+        b.x(div);
+        emit_plusminus_low_unary_any_one_into_for_test(b, cu, hist, bad);
+        b.free(div);
+        b.free(bad);
+    }
+
+    fn emit_plusminus_inplace_step_forward_konly_active_for_test(
+        b: &mut super::super::B,
+        u: &[super::super::QubitId],
+        v: &[super::super::QubitId],
+        cu: &[super::super::QubitId],
+        cv: &[super::super::QubitId],
+        active_chain: &[super::super::QubitId],
+        hist: &[super::super::QubitId],
+        spill: super::super::QubitId,
+        flag: super::super::QubitId,
+    ) {
+        let act = b.alloc_qubit();
+        super::super::sub_nbit_qq_fast(b, v, u); // u=d, possibly zero.
+        super::super::cmp_neq_zero_into(b, u, act);
+        emit_trailing_zero_active_chain_history_controlled_for_plusminus(b, u, act, active_chain, hist);
+        for &h in hist {
+            emit_controlled_right_shift_exact_for_plusminus(b, u, h, spill);
+        }
+        emit_controlled_integer_add_for_plusminus(b, cu, cv, act, true);
+        for &h in hist {
+            emit_controlled_left_shift_nooverflow_for_plusminus(b, cv, h, spill);
+        }
+        let cmp = b.alloc_qubit();
+        super::super::cmp_lt_into(b, u, v, cmp);
+        b.ccx(act, cmp, flag);
+        super::super::cmp_lt_into(b, u, v, cmp);
+        b.free(cmp);
+        for i in 0..u.len() {
+            local_cswap_for_plusminus_cost(b, flag, u[i], v[i]);
+            local_cswap_for_plusminus_cost(b, flag, cu[i], cv[i]);
+        }
+        emit_plusminus_recover_direction_from_coeff_divisibility_controlled_for_test(b, cu, hist, act, flag);
+        // Inactive case had u=d=0; restore u=v. Active case is left alone.
+        b.x(act);
+        emit_controlled_integer_add_for_plusminus(b, u, v, act, false);
+        b.x(act);
+        super::super::cmp_neq_zero_into(b, hist, act); // hist!=0 clears active; hist=0 leaves it clear.
+        b.free(act);
+    }
+
+    fn emit_plusminus_inplace_step_inverse_konly_active_for_test(
+        b: &mut super::super::B,
+        u: &[super::super::QubitId],
+        v: &[super::super::QubitId],
+        cu: &[super::super::QubitId],
+        cv: &[super::super::QubitId],
+        active_chain: &[super::super::QubitId],
+        hist: &[super::super::QubitId],
+        spill: super::super::QubitId,
+        flag: super::super::QubitId,
+    ) {
+        let act = b.alloc_qubit();
+        super::super::cmp_neq_zero_into(b, hist, act);
+        emit_plusminus_recover_direction_from_coeff_divisibility_controlled_for_test(b, cu, hist, act, flag);
+        for i in 0..u.len() {
+            local_cswap_for_plusminus_cost(b, flag, u[i], v[i]);
+            local_cswap_for_plusminus_cost(b, flag, cu[i], cv[i]);
+        }
+        super::super::cmp_lt_into(b, u, v, flag);
+        for &h in hist.iter().rev() {
+            emit_controlled_left_shift_nooverflow_inverse_for_plusminus(b, cv, h, spill);
+        }
+        emit_controlled_integer_add_for_plusminus(b, cu, cv, act, false);
+        for &h in hist.iter().rev() {
+            emit_controlled_left_shift_unsigned_exact_for_plusminus(b, u, h, spill);
+        }
+        emit_trailing_zero_active_chain_history_controlled_for_plusminus(b, u, act, active_chain, hist);
+        emit_controlled_integer_add_for_plusminus(b, u, v, act, false);
+        // Clear act from the restored pre-step equality/inequality.
+        super::super::sub_nbit_qq_fast(b, v, u);
+        super::super::cmp_neq_zero_into(b, u, act);
+        super::super::add_nbit_qq_fast(b, v, u);
+        b.free(act);
+    }
+
     fn plusminus_classical_step_mod_width_for_test(
         u: &mut u64,
         v: &mut u64,
@@ -4050,6 +4145,106 @@ mod tests {
             *cu = cd;
             *cv = cvs;
         }
+    }
+
+    #[test]
+    fn plusminus_active_aware_step_noop_and_roundtrip_is_clean() {
+        // Fixed-bound loop smoke test: u==v must be a no-op with an all-zero
+        // history word, while u!=v must match the ordinary k-only step.  The
+        // active bit is temporary and is cleared from hist!=0 / restored d.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 12;
+        let mut bf = super::super::B::new();
+        let fu = bf.alloc_qubits(W);
+        let fv = bf.alloc_qubits(W);
+        let fcu = bf.alloc_qubits(W);
+        let fcv = bf.alloc_qubits(W);
+        let factive = bf.alloc_qubits(W + 1);
+        let fhist = bf.alloc_qubits(W);
+        let fspill = bf.alloc_qubit();
+        let fflag = bf.alloc_qubit();
+        let fstart = bf.ops.len();
+        emit_plusminus_inplace_step_forward_konly_active_for_test(&mut bf, &fu, &fv, &fcu, &fcv, &factive, &fhist, fspill, fflag);
+        let f_ccx = local_count_ccx_for_plusminus_cost(&bf.ops[fstart..]);
+        let f_peak = bf.peak_qubits;
+        let f_num_qubits = bf.next_qubit as usize;
+        let f_num_bits = bf.next_bit as usize;
+        let f_ops = bf.ops;
+        let mask = (1u64 << W) - 1;
+        let forward_cases = [(91u64, 27u64, true), (201, 77, true), (45, 45, false), (127, 127, false)];
+        for &(uval, vval, is_active) in &forward_cases {
+            let (mut eu, mut ev, mut ecu, mut ecv) = (uval, vval, 0u64, 1u64);
+            let expected_hist = if is_active {
+                let k = (uval - vval).trailing_zeros() as usize;
+                plusminus_classical_step_mod_width_for_test(&mut eu, &mut ev, &mut ecu, &mut ecv, W);
+                (1u64 << k) - 1
+            } else {
+                0
+            };
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"plusminus-active-aware-step-forward-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(f_num_qubits, f_num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &fu, U512::from(uval));
+            set_slice_u512_pm(&mut sim, &fv, U512::from(vval));
+            set_slice_u512_pm(&mut sim, &fcu, U512::ZERO);
+            set_slice_u512_pm(&mut sim, &fcv, U512::from(1u64));
+            sim.apply(&f_ops);
+            assert_eq!(get_slice_u512_pm(&sim, &fu).as_limbs()[0] & mask, eu & mask, "forward u mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fv).as_limbs()[0] & mask, ev & mask, "forward v mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fcu).as_limbs()[0] & mask, ecu & mask, "forward cu mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fcv).as_limbs()[0] & mask, ecv & mask, "forward cv mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &fhist).as_limbs()[0] & mask, expected_hist, "forward hist mismatch case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &factive), U512::ZERO, "forward active dirty case=({uval},{vval})");
+            assert_eq!(sim.qubit(fspill) & 1, 0, "forward spill dirty case=({uval},{vval})");
+            assert_eq!(sim.qubit(fflag) & 1, 0, "forward flag dirty case=({uval},{vval})");
+            assert_eq!(sim.global_phase() & 1, 0, "forward unexpected phase case=({uval},{vval})");
+        }
+
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hist = b.alloc_qubits(W);
+        let spill = b.alloc_qubit();
+        let flag = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_plusminus_inplace_step_forward_konly_active_for_test(&mut b, &u, &v, &cu, &cv, &active, &hist, spill, flag);
+        emit_plusminus_inplace_step_inverse_konly_active_for_test(&mut b, &u, &v, &cu, &cv, &active, &hist, spill, flag);
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        for &(uval, vval, _) in &forward_cases {
+            let mut hasher = sha3::Shake128::default();
+            hasher.update(b"plusminus-active-aware-step-roundtrip-v1");
+            let mut xof = hasher.finalize_xof();
+            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+            set_slice_u512_pm(&mut sim, &u, U512::from(uval));
+            set_slice_u512_pm(&mut sim, &v, U512::from(vval));
+            set_slice_u512_pm(&mut sim, &cu, U512::ZERO);
+            set_slice_u512_pm(&mut sim, &cv, U512::from(1u64));
+            sim.apply(&ops);
+            assert_eq!(get_slice_u512_pm(&sim, &u).as_limbs()[0] & mask, uval & mask, "u changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & mask, vval & mask, "v changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cu).as_limbs()[0] & mask, 0, "cu changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &cv).as_limbs()[0] & mask, 1, "cv changed case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &hist), U512::ZERO, "hist not clean case=({uval},{vval})");
+            assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean case=({uval},{vval})");
+            assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean case=({uval},{vval})");
+            assert_eq!(sim.qubit(flag) & 1, 0, "flag not clean case=({uval},{vval})");
+            assert_eq!(sim.global_phase() & 1, 0, "unexpected phase case=({uval},{vval})");
+        }
+        eprintln!("plus-minus active-aware one-step: width={W}, forward_ccx={f_ccx}, forward_peak={f_peak}, roundtrip_ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_active_step_width={W}");
+        println!("METRIC plusminus_active_step_forward_ccx={f_ccx}");
+        println!("METRIC plusminus_active_step_forward_peak_q={f_peak}");
+        println!("METRIC plusminus_active_step_roundtrip_ccx={ccx}");
+        println!("METRIC plusminus_active_step_roundtrip_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
     }
 
     #[test]
