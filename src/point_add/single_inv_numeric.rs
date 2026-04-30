@@ -1676,6 +1676,69 @@ mod tests {
         })
     }
 
+    fn curve_y_support_inverse_phase_has_degree_at_most(
+        n: usize,
+        p: u16,
+        qy: u16,
+        phase_mask: u16,
+        degree: usize,
+    ) -> bool {
+        let masks = monomial_masks_for_curve_phase_test(n, degree);
+        let cols = masks.len();
+        let chunks = (cols + 1 + 63) / 64;
+        let mut y_support = vec![false; p as usize];
+        for x in 0..p {
+            let x2 = mul_mod_u16_for_phase_test(x, x, p);
+            let rhs = add_mod_u16_for_phase_test(mul_mod_u16_for_phase_test(x2, x, p), 7, p);
+            for y in 0..p {
+                if ((y as u32 * y as u32) % p as u32) as u16 == rhs {
+                    y_support[y as usize] = true;
+                }
+            }
+        }
+        let mut rows = Vec::new();
+        for y in 0..p {
+            if !y_support[y as usize] {
+                continue;
+            }
+            let denom = add_mod_u16_for_phase_test(y, qy, p);
+            if denom == 0 {
+                continue;
+            }
+            let inv = inv_mod_u16_for_phase_test(denom, p);
+            let mut row = vec![0u64; chunks];
+            let idx = y as u32;
+            for (col, &m) in masks.iter().enumerate() {
+                if (idx & m) == m {
+                    row[col / 64] |= 1u64 << (col % 64);
+                }
+            }
+            if ((inv & phase_mask).count_ones() & 1) != 0 {
+                row[cols / 64] |= 1u64 << (cols % 64);
+            }
+            rows.push(row);
+        }
+        let mut rows_a = rows.clone();
+        for row in &mut rows_a {
+            row[cols / 64] &= !(1u64 << (cols % 64));
+        }
+        let rank_a = gf2_rank_bitrows_for_curve_phase_test(&mut rows_a, cols);
+        let rank_aug = gf2_rank_bitrows_for_curve_phase_test(&mut rows, cols + 1);
+        rank_a == rank_aug
+    }
+
+    fn curve_y_support_inverse_phase_min_degree(
+        n: usize,
+        p: u16,
+        qy: u16,
+        phase_mask: u16,
+        max_degree: usize,
+    ) -> Option<usize> {
+        (0..=max_degree).find(|&d| {
+            curve_y_support_inverse_phase_has_degree_at_most(n, p, qy, phase_mask, d)
+        })
+    }
+
     fn variable_mul_old_multiplier_cleanup_anf_stats(n: usize, p: u16, phase_mask: u16) -> (usize, usize) {
         // Phase for X-measuring the old multiplier b after a hypothetical
         // in-place variable multiply has kept (a, t=a*b).  Cleaning b needs
@@ -1776,6 +1839,37 @@ mod tests {
             .max()
             .unwrap_or(0);
         (degree, density, supported_slopes)
+    }
+
+    #[test]
+    fn endomorphism_y_denominator_support_inverse_still_grows() {
+        // The j=0 endomorphism identity swaps the usual slope denominator
+        // (x-Qx) for (y+Qy), with an x-only quadratic numerator.  That would be
+        // much more useful if reciprocal on the curve y-coordinate support were
+        // low-degree.  On secp-shaped toy primes p=1 mod 3, the y-support is
+        // smaller than the x-support, but the interpolation degree still grows;
+        // the endomorphism only changes which hard inverse we face.
+        let cases = [
+            (10usize, 1021u16, 0b10_1001_0101u16, 4usize),
+            (12usize, 4093u16, 0b1010_0101_0101u16, 5usize),
+            (14usize, 16381u16, 0b10_1010_0101_0101u16, 6usize),
+        ];
+        let mut last = 0usize;
+        for &(n, p, mask, expected) in &cases {
+            let (_qx, qy) = first_curve_point_u16_for_phase_test(p);
+            let min_degree = curve_y_support_inverse_phase_min_degree(n, p, qy, mask, expected)
+                .expect("curve-y inverse phase should interpolate at expected threshold");
+            eprintln!(
+                "Curve-y-support inverse phase: n={n}, p={p}, qy={qy}, min_degree={min_degree}"
+            );
+            if n == 14 {
+                println!("METRIC endomorphism_y_support_inv_min_degree_n14={min_degree}");
+            }
+            assert!(min_degree >= last);
+            assert_eq!(min_degree, expected);
+            last = min_degree;
+        }
+        assert!(last >= 6);
     }
 
     #[test]

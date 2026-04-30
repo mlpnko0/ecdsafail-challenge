@@ -1,5 +1,7 @@
 # Autoresearch Ideas Backlog
 
+- **secp256k1 endomorphism y-denominator swap still leaves a growing inverse on y-support.** `endomorphism_y_denominator_support_inverse_still_grows` targets the identity replacing `(x-Qx)^{-1}` by `(y+Qy)^{-1}` with an x-only numerator. On p≡1 mod 3 toy supports the y-set is smaller, but interpolation degree still grows: `n=10,12,14 -> 4,5,6` (`endomorphism_y_support_inv_min_degree_n14=6`). This keeps the j=0 identity as algebraic ammunition, not a cleanup primitive.
+
 - **Half-GCD checkpoint matrix MBUC is dense too.** `half_gcd_checkpoint_matrix_mbu_phase_is_dense_too` asks whether the compact first half-GCD matrix can be measured away and phase-corrected from the original denominator. A representative matrix parity is already `halfgcd_matrix_mbu_degree_n14=13/14`, `density=8162/16384`, so checkpoint matrices are not a free kickmix object.
 
 - **Half-GCD matrix checkpoints are state-interesting but still miss 600 scratch with the tail charged.** `half_gcd_matrix_checkpoint_still_has_tail_history_problem` stops ordinary Euclid near sqrt(p). The first 2×2 transform is compact enough to be tempting (`halfgcd_matrix_bits_p99=524`), but the residual pair is another `256` bits (`matrix+residual_p99=769`) and even matrix plus raw tail quotient payload is `689` bits before self-delimiting/parser/cleanup. Recursive GCD remains an idea only if matrix application and tail cleanup are fused without keeping both objects.
