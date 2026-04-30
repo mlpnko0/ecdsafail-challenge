@@ -3593,20 +3593,102 @@ mod tests {
         local_count_ccx_for_plusminus_cost(&b.ops[start..])
     }
 
+    fn emit_controlled_left_shift_nooverflow_for_plusminus(
+        b: &mut super::super::B,
+        v: &[super::super::QubitId],
+        ctrl: super::super::QubitId,
+        spill: super::super::QubitId,
+    ) {
+        // Controlled arithmetic left shift on a promised no-overflow signed
+        // two's-complement value.  The swap cascade leaves the old top bit in
+        // `spill`; no-overflow means old_top == new_top, so one controlled CNOT
+        // clears spill.  This is a real reversible gate sequence globally; on
+        // invalid inputs it leaves nonzero spill instead of silently erasing.
+        for i in (0..v.len()).rev() {
+            let lo = if i == 0 { spill } else { v[i - 1] };
+            local_cswap_for_plusminus_cost(b, ctrl, lo, v[i]);
+        }
+        b.ccx(ctrl, v[v.len() - 1], spill);
+    }
+
     fn controlled_left_shift_cost_for_plusminus(width: usize) -> usize {
-        // Cost a reversible controlled left-shift by one with one clean low-bit
-        // placeholder.  A production signed representation must prove the top
-        // sign/overflow bit is recoverable; this is the optimistic cswap floor.
         let mut b = super::super::B::new();
         let v = b.alloc_qubits(width);
-        let z = b.alloc_qubit();
+        let spill = b.alloc_qubit();
         let ctrl = b.alloc_qubit();
         let start = b.ops.len();
-        for i in (0..width).rev() {
-            let lo = if i == 0 { z } else { v[i - 1] };
-            local_cswap_for_plusminus_cost(&mut b, ctrl, lo, v[i]);
-        }
+        emit_controlled_left_shift_nooverflow_for_plusminus(&mut b, &v, ctrl, spill);
         local_count_ccx_for_plusminus_cost(&b.ops[start..])
+    }
+
+    fn set_slice_u512_pm<R: sha3::digest::XofReader>(
+        sim: &mut crate::sim::Simulator<R>,
+        qs: &[super::super::QubitId],
+        val: U512,
+    ) {
+        for (i, &q) in qs.iter().enumerate() {
+            if val.bit(i) {
+                *sim.qubit_mut(q) |= 1;
+            } else {
+                *sim.qubit_mut(q) &= !1;
+            }
+        }
+    }
+
+    fn get_slice_u512_pm<R: sha3::digest::XofReader>(
+        sim: &crate::sim::Simulator<R>,
+        qs: &[super::super::QubitId],
+    ) -> U512 {
+        let mut bytes = [0u8; 64];
+        for (i, &q) in qs.iter().enumerate() {
+            if (sim.qubit(q) & 1) != 0 {
+                bytes[i / 8] |= 1u8 << (i % 8);
+            }
+        }
+        U512::from_le_slice(&bytes)
+    }
+
+    #[test]
+    fn plusminus_nooverflow_controlled_shift_circuit_is_clean() {
+        // First actual reversible circuit skeleton for the scaled-integer route.
+        // It validates the promised no-overflow controlled left shift used by
+        // the cost model: valid signed inputs produce 2*x, ctrl=0 is identity,
+        // and the spill ancilla returns to zero with no measurement phase.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 16;
+        let mut b = super::super::B::new();
+        let v = b.alloc_qubits(W);
+        let ctrl = b.alloc_qubit();
+        let spill = b.alloc_qubit();
+        let start = b.ops.len();
+        emit_controlled_left_shift_nooverflow_for_plusminus(&mut b, &v, ctrl, spill);
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1i64 << W) - 1;
+        for &ctrl_val in &[false, true] {
+            for x in -128i64..128i64 {
+                let raw = (x & mask) as u64;
+                let expected = if ctrl_val { ((2 * x) & mask) as u64 } else { raw };
+                let mut hasher = sha3::Shake128::default();
+                hasher.update(b"plusminus-nooverflow-shift-circuit-v1");
+                let mut xof = hasher.finalize_xof();
+                let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                set_slice_u512_pm(&mut sim, &v, U512::from(raw));
+                if ctrl_val { *sim.qubit_mut(ctrl) |= 1; }
+                sim.apply(&ops);
+                assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & ((1u64 << W) - 1), expected, "shift value mismatch ctrl={ctrl_val} x={x}");
+                assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean ctrl={ctrl_val} x={x}");
+                assert_eq!(sim.global_phase() & 1, 0, "unexpected phase ctrl={ctrl_val} x={x}");
+            }
+        }
+        eprintln!("plus-minus no-overflow controlled shift circuit: width={W}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_shift_circuit_width={W}");
+        println!("METRIC plusminus_shift_circuit_ccx={ccx}");
+        println!("METRIC plusminus_shift_circuit_peak_q={peak}");
+        assert_eq!(ccx, W + 1, "controlled no-overflow shift should cost width+1 CCX");
     }
 
     #[test]
