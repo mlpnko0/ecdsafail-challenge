@@ -3924,6 +3924,75 @@ mod tests {
     }
 
     #[test]
+    fn plusminus_inplace_three_step_roundtrip_is_clean() {
+        // Multi-step smoke test with separate public history slots. This catches
+        // whether the in-place step can actually be chained like a DIV loop,
+        // not just run once in isolation.
+        use sha3::digest::{ExtendableOutput, Update};
+        const W: usize = 16;
+        const STEPS: usize = 3;
+        let mut b = super::super::B::new();
+        let u = b.alloc_qubits(W);
+        let v = b.alloc_qubits(W);
+        let cu = b.alloc_qubits(W);
+        let cv = b.alloc_qubits(W);
+        let active = b.alloc_qubits(W + 1);
+        let hists: Vec<Vec<super::super::QubitId>> = (0..STEPS).map(|_| b.alloc_qubits(W)).collect();
+        let flags = b.alloc_qubits(STEPS);
+        let spill = b.alloc_qubit();
+        let one = b.alloc_qubit();
+        let start = b.ops.len();
+        for step in 0..STEPS {
+            emit_plusminus_inplace_step_forward_for_test(&mut b, &u, &v, &cu, &cv, &active, &hists[step], spill, flags[step], one);
+        }
+        for step in (0..STEPS).rev() {
+            emit_plusminus_inplace_step_inverse_for_test(&mut b, &u, &v, &cu, &cv, &active, &hists[step], spill, flags[step], one);
+        }
+        let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+        let peak = b.peak_qubits;
+        let num_qubits = b.next_qubit as usize;
+        let num_bits = b.next_bit as usize;
+        let ops = b.ops;
+        let mask = (1u64 << W) - 1;
+        let cases = [(91u64, 27u64), (128, 64), (201, 77), (255, 127), (1000, 17), (987, 31)];
+        for &(uval, vval) in &cases {
+            for cuv in [0u64, 1, 7, 123] {
+                for cvv in [0u64, 1, 3, 5] {
+                    let mut hasher = sha3::Shake128::default();
+                    hasher.update(b"plusminus-inplace-three-step-roundtrip-v1");
+                    let mut xof = hasher.finalize_xof();
+                    let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                    set_slice_u512_pm(&mut sim, &u, U512::from(uval));
+                    set_slice_u512_pm(&mut sim, &v, U512::from(vval));
+                    set_slice_u512_pm(&mut sim, &cu, U512::from(cuv));
+                    set_slice_u512_pm(&mut sim, &cv, U512::from(cvv));
+                    sim.apply(&ops);
+                    assert_eq!(get_slice_u512_pm(&sim, &u).as_limbs()[0] & mask, uval & mask, "u changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &v).as_limbs()[0] & mask, vval & mask, "v changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &cu).as_limbs()[0] & mask, cuv & mask, "cu changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &cv).as_limbs()[0] & mask, cvv & mask, "cv changed");
+                    assert_eq!(get_slice_u512_pm(&sim, &active), U512::ZERO, "active not clean");
+                    for (i, hist) in hists.iter().enumerate() {
+                        assert_eq!(get_slice_u512_pm(&sim, hist), U512::ZERO, "hist {i} not clean");
+                    }
+                    for (i, &flag) in flags.iter().enumerate() {
+                        assert_eq!(sim.qubit(flag) & 1, 0, "flag {i} not clean");
+                    }
+                    assert_eq!(sim.qubit(spill) & 1, 0, "spill not clean");
+                    assert_eq!(sim.qubit(one) & 1, 0, "one not clean");
+                    assert_eq!(sim.global_phase() & 1, 0, "unexpected phase");
+                }
+            }
+        }
+        eprintln!("plus-minus in-place three-step roundtrip: width={W}, steps={STEPS}, ccx={ccx}, peak={peak}");
+        println!("METRIC plusminus_inplace_three_step_width={W}");
+        println!("METRIC plusminus_inplace_three_step_steps={STEPS}");
+        println!("METRIC plusminus_inplace_three_step_ccx={ccx}");
+        println!("METRIC plusminus_inplace_three_step_peak_q={peak}");
+        assert!(ccx > 0 && peak > 0);
+    }
+
+    #[test]
     fn plusminus_inplace_one_step_forward_matches_classical() {
         // First genuinely low-scratch productive step: mutate (u,v,cu,cv) in
         // place and leave unary k plus one direction bit as history. This is
