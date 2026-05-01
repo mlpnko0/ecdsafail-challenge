@@ -5085,6 +5085,56 @@ mod tests {
     }
 
     #[test]
+    fn partial_prefix_qoffset_scratch_schedule_requires_temp_reuse_but_fits() {
+        // The prefix90 budget only fits strict scratch if the clean prefix-mask
+        // row is not allocated simultaneously with the lowword selector's local
+        // simulator. This executable ledger makes that reuse assumption
+        // explicit and keeps the route from silently double-counting scratch.
+        const W: usize = 16;
+        const DBITS: usize = 10;
+        let mut b = super::super::B::new();
+        let f = b.alloc_qubits(W);
+        let g = b.alloc_qubits(W);
+        let delta = b.alloc_qubits(DBITS);
+        let pattern_tmp = b.alloc_qubits(W);
+        let a_tmp = b.alloc_qubits(W);
+        let pattern_hist = b.alloc_qubits(W);
+        for i in 0..W {
+            emit_2adic_by_branch_step_for_test(&mut b, &f, &g, &delta, pattern_tmp[i], a_tmp[i]);
+        }
+        for i in 0..W {
+            b.cx(pattern_tmp[i], pattern_hist[i]);
+        }
+        for i in (0..W).rev() {
+            emit_2adic_by_branch_step_reverse_for_test(&mut b, &f, &g, &delta, pattern_tmp[i], a_tmp[i]);
+        }
+        let lowword_oracle_peak = b.peak_qubits as usize;
+        let lowword_oracle_ccx = count_ccx(&b.ops);
+
+        let compressed_history = 481usize;
+        let decoder_control = 26usize;
+        let small_clean = 3usize;
+        let prefix = 90usize;
+        let pattern_bits_in_oracle_peak = W;
+        let selector_extra = lowword_oracle_peak - pattern_bits_in_oracle_peak;
+        let selector_peak_with_reuse = compressed_history + selector_extra;
+        let selector_peak_without_reuse = selector_peak_with_reuse + prefix;
+        let replay_peak = compressed_history + decoder_control + small_clean + prefix;
+        let scheduled_peak = selector_peak_with_reuse.max(replay_peak);
+        println!("METRIC by_partial_prefix_schedule_lowword_oracle_peak={lowword_oracle_peak}");
+        println!("METRIC by_partial_prefix_schedule_lowword_oracle_ccx={lowword_oracle_ccx}");
+        println!("METRIC by_partial_prefix_schedule_selector_peak_reuse={selector_peak_with_reuse}");
+        println!("METRIC by_partial_prefix_schedule_selector_peak_no_reuse={selector_peak_without_reuse}");
+        println!("METRIC by_partial_prefix_schedule_replay_peak={replay_peak}");
+        println!("METRIC by_partial_prefix_schedule_peak={scheduled_peak}");
+        eprintln!(
+            "BY partial-prefix scratch schedule: lowword_peak={lowword_oracle_peak}, selector_reuse={selector_peak_with_reuse}, selector_no_reuse={selector_peak_without_reuse}, replay={replay_peak}, scheduled={scheduled_peak}"
+        );
+        assert!(selector_peak_without_reuse > 600, "temp reuse is no longer required; simplify the schedule");
+        assert!(scheduled_peak <= 600, "partial-prefix qoffset scratch schedule no longer fits strict 600");
+    }
+
+    #[test]
     fn partial_mask_controlled_qoffset_linear_tradeoff_just_misses_600q_target() {
         // First-order model after the masked-borrow primitive: full mask gives
         // good gates but 766q scratch with compressed history; no mask gives
