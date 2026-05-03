@@ -10166,6 +10166,55 @@ mod tests {
         digits
     }
 
+    fn nonrestoring_floor_restoring_final_digits_for_centered_test(
+        n: U512,
+        d: U512,
+    ) -> Vec<(bool, usize)> {
+        assert!(!d.is_zero());
+        if n.is_zero() {
+            return Vec::new();
+        }
+        let top = u512_bit_len_for_halfgcd_test(n).saturating_sub(u512_bit_len_for_halfgcd_test(d));
+        let mut rem = smag_for_halfgcd_test(false, n);
+        let mut q = smag_for_halfgcd_test(false, U512::ZERO);
+        let mut digits = Vec::with_capacity(top + 1);
+        for sh in (1..=top).rev() {
+            let digit_neg = rem.neg;
+            let term = smag_for_halfgcd_test(false, d << sh);
+            let qterm = smag_for_halfgcd_test(false, U512::from(1u64) << sh);
+            if digit_neg {
+                rem = signed_add_for_halfgcd_test(rem, term);
+                q = signed_add_for_halfgcd_test(q, signed_neg_for_halfgcd_test(qterm));
+            } else {
+                rem = signed_add_for_halfgcd_test(rem, signed_neg_for_halfgcd_test(term));
+                q = signed_add_for_halfgcd_test(q, qterm);
+            }
+            digits.push((digit_neg, sh));
+        }
+        if rem.neg && rem.mag > d {
+            rem = signed_add_for_halfgcd_test(rem, smag_for_halfgcd_test(false, d << 1usize));
+            q = signed_add_for_halfgcd_test(q, smag_for_halfgcd_test(true, U512::from(2u64)));
+            digits.push((true, 1));
+        } else if rem.neg && !rem.mag.is_zero() {
+            rem = signed_add_for_halfgcd_test(rem, smag_for_halfgcd_test(false, d));
+            q = signed_add_for_halfgcd_test(q, smag_for_halfgcd_test(true, U512::from(1u64)));
+            digits.push((true, 0));
+        } else if !rem.neg && rem.mag >= d {
+            rem = signed_add_for_halfgcd_test(rem, signed_neg_for_halfgcd_test(smag_for_halfgcd_test(false, d)));
+            q = signed_add_for_halfgcd_test(q, smag_for_halfgcd_test(false, U512::from(1u64)));
+            digits.push((false, 0));
+        }
+        assert!(
+            !rem.neg && rem.mag < d,
+            "restoring-final remainder escaped floor range n={n} d={d} top={top} rem={rem:?} q={q:?}"
+        );
+        assert!(
+            !q.neg && q.mag == n / d,
+            "restoring-final signed digits did not produce floor quotient"
+        );
+        digits
+    }
+
     fn nonrestoring_prefinal_signed_digits_for_centered_test(
         n: U512,
         d: U512,
@@ -10441,6 +10490,30 @@ mod tests {
         b.free(nonnegative);
     }
 
+    fn emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+        b: &mut super::super::B,
+        acc: &[super::super::QubitId],
+        shifted_v: &[super::super::QubitId],
+        active: super::super::QubitId,
+        sign_hist: super::super::QubitId,
+    ) {
+        assert_eq!(acc.len(), shifted_v.len());
+        let gated = b.alloc_qubits(shifted_v.len());
+        for i in 0..shifted_v.len() {
+            b.ccx(active, shifted_v[i], gated[i]);
+        }
+        emit_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            acc,
+            &gated,
+            sign_hist,
+        );
+        for i in (0..shifted_v.len()).rev() {
+            b.ccx(active, shifted_v[i], gated[i]);
+        }
+        b.free_vec(&gated);
+    }
+
     fn emit_shift_right_1_nooverflow_for_centered_test(
         b: &mut super::super::B,
         v: &[super::super::QubitId],
@@ -10676,6 +10749,143 @@ mod tests {
         }
         b.free_vec(&shifted_cv);
         b.free_vec(&shifted_v);
+    }
+
+    fn emit_toy_direct_centered_nonrestoring_inline_coeff_restoring_final_for_centered_test(
+        b: &mut super::super::B,
+        rem: &[super::super::QubitId],
+        divisor: &[super::super::QubitId],
+        coeff_acc: &[super::super::QubitId],
+        coeff_v: &[super::super::QubitId],
+        digit_hist: &[super::super::QubitId],
+        final_neg1: super::super::QubitId,
+        final_neg2: super::super::QubitId,
+        final_pos_ge: super::super::QubitId,
+        final_lt_tmp: super::super::QubitId,
+        q_neg: bool,
+    ) {
+        assert_eq!(digit_hist.len(), 6);
+        assert_eq!(rem.len(), 11);
+        assert_eq!(divisor.len(), 4);
+        assert_eq!(coeff_acc.len(), coeff_v.len());
+        let top_shift = digit_hist.len() - 1;
+        assert!(coeff_v.len() > top_shift);
+        let sign_false = b.alloc_qubit();
+        let sign_true = b.alloc_qubit();
+        b.x(sign_true);
+        let coeff_sign_pos = if q_neg { sign_true } else { sign_false };
+        let coeff_sign_neg = if q_neg { sign_false } else { sign_true };
+
+        let shifted_v = b.alloc_qubits(rem.len());
+        let shifted_cv = b.alloc_qubits(coeff_v.len());
+        for i in 0..divisor.len() {
+            b.cx(divisor[i], shifted_v[i + top_shift]);
+        }
+        for i in 0..coeff_v.len() - top_shift {
+            b.cx(coeff_v[i], shifted_cv[i + top_shift]);
+        }
+        for sh in (1..digit_hist.len()).rev() {
+            b.cx(rem[rem.len() - 1], digit_hist[sh]);
+            emit_fused_sign_controlled_addsub_digit_for_centered_test(
+                b,
+                rem,
+                &shifted_v,
+                digit_hist[sh],
+            );
+            if q_neg {
+                b.x(digit_hist[sh]);
+            }
+            emit_fused_sign_controlled_addsub_digit_for_centered_test(
+                b,
+                coeff_acc,
+                &shifted_cv,
+                digit_hist[sh],
+            );
+            if q_neg {
+                b.x(digit_hist[sh]);
+            }
+            emit_shift_right_1_nooverflow_for_centered_test(b, &shifted_v);
+            emit_arithmetic_shift_right_1_exact_for_centered_test(b, &shifted_cv);
+        }
+
+        b.cx(rem[rem.len() - 1], final_neg1);
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            rem,
+            &shifted_v,
+            final_neg1,
+            sign_true,
+        );
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            coeff_acc,
+            &shifted_cv,
+            final_neg1,
+            coeff_sign_neg,
+        );
+        b.ccx(final_neg1, rem[rem.len() - 1], final_neg2);
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            rem,
+            &shifted_v,
+            final_neg2,
+            sign_true,
+        );
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            coeff_acc,
+            &shifted_cv,
+            final_neg2,
+            coeff_sign_neg,
+        );
+
+        let pos = b.alloc_qubit();
+        b.cx(final_neg1, pos);
+        b.x(pos);
+        super::super::cmp_lt_into(b, rem, &shifted_v, final_lt_tmp);
+        b.x(final_lt_tmp);
+        b.ccx(pos, final_lt_tmp, final_pos_ge);
+        b.x(final_lt_tmp);
+        super::super::cmp_lt_into(b, rem, &shifted_v, final_lt_tmp);
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            rem,
+            &shifted_v,
+            final_pos_ge,
+            sign_false,
+        );
+        emit_active_fused_sign_controlled_addsub_digit_for_centered_test(
+            b,
+            coeff_acc,
+            &shifted_cv,
+            final_pos_ge,
+            coeff_sign_pos,
+        );
+        b.x(pos);
+        b.cx(final_neg1, pos);
+        b.free(pos);
+
+        let half_v = b.alloc_qubits(rem.len());
+        for i in 1..divisor.len() {
+            b.cx(divisor[i], half_v[i - 1]);
+        }
+        super::super::sub_nbit_qq_fast(b, &half_v, rem);
+        for i in (1..divisor.len()).rev() {
+            b.cx(divisor[i], half_v[i - 1]);
+        }
+        b.free_vec(&half_v);
+
+        for i in (0..coeff_v.len()).rev() {
+            b.cx(coeff_v[i], shifted_cv[i]);
+        }
+        for i in (0..divisor.len()).rev() {
+            b.cx(divisor[i], shifted_v[i]);
+        }
+        b.free_vec(&shifted_cv);
+        b.free_vec(&shifted_v);
+        b.x(sign_true);
+        b.free(sign_true);
+        b.free(sign_false);
     }
 
     fn emit_centered_final_half_fix_for_centered_test(
@@ -11314,6 +11524,184 @@ mod tests {
             "Centered direct inline coefficient centered-step toy: ccx={ccx}, peak={peak}, expected_ccx={expected_ccx}"
         );
         assert_eq!(ccx, expected_ccx, "centered inline coefficient toy cost drifted");
+    }
+
+    #[test]
+    fn direct_centered_restoring_final_inline_coeff_toy_is_phase_clean() {
+        // Avoid the late final_negative correction by making the last digit
+        // restoring: negative remainders add one or two divisors, nonnegative
+        // remainders subtract once only when still at least the divisor.
+        use sha3::digest::{ExtendableOutput, Update};
+
+        const REM_W: usize = 11;
+        const DIV_W: usize = 4;
+        const COEFF_W: usize = 8;
+        const DIGITS: usize = 6;
+        let raw_from_i64 = |x: i64, width: usize| -> u64 {
+            ((x as i128) & ((1i128 << width) - 1)) as u64
+        };
+        let i64_from_raw = |raw: u64, width: usize| -> i64 {
+            let mask = (1u64 << width) - 1;
+            let raw = raw & mask;
+            if (raw & (1u64 << (width - 1))) != 0 {
+                raw as i64 - (1i64 << width)
+            } else {
+                raw as i64
+            }
+        };
+
+        for q_neg in [false, true] {
+            let mut b = super::super::B::new();
+            let rem = b.alloc_qubits(REM_W);
+            let divisor = b.alloc_qubits(DIV_W);
+            let coeff_acc = b.alloc_qubits(COEFF_W);
+            let coeff_v = b.alloc_qubits(COEFF_W);
+            let digit_hist = b.alloc_qubits(DIGITS);
+            let final_neg1 = b.alloc_qubit();
+            let final_neg2 = b.alloc_qubit();
+            let final_pos_ge = b.alloc_qubit();
+            let final_lt_tmp = b.alloc_qubit();
+            let start = b.ops.len();
+            emit_toy_direct_centered_nonrestoring_inline_coeff_restoring_final_for_centered_test(
+                &mut b,
+                &rem,
+                &divisor,
+                &coeff_acc,
+                &coeff_v,
+                &digit_hist,
+                final_neg1,
+                final_neg2,
+                final_pos_ge,
+                final_lt_tmp,
+                q_neg,
+            );
+            let ccx = local_count_ccx_for_plusminus_cost(&b.ops[start..]);
+            let peak = b.peak_qubits;
+            let num_qubits = b.next_qubit as usize;
+            let num_bits = b.next_bit as usize;
+            let ops = b.ops;
+            let rem_mask = (1u64 << REM_W) - 1;
+            let coeff_mask = (1u64 << COEFF_W) - 1;
+            let div_mask = (1u64 << DIV_W) - 1;
+            let mut final_neg2_cases = 0usize;
+            let mut final_zero_cases = 0usize;
+            for d in 1u64..(1u64 << DIV_W) {
+                for n in 0u64..49u64 {
+                    for cu0 in -5i64..=5i64 {
+                        for cv0 in -2i64..=2i64 {
+                            let adjusted = n + (d >> 1);
+                            let expected_q = (adjusted / d) as i64;
+                            let expected_rem = n as i64 - expected_q * d as i64;
+                            let expected_coeff = if q_neg {
+                                cu0 + expected_q * cv0
+                            } else {
+                                cu0 - expected_q * cv0
+                            };
+                            assert!(
+                                (-128..128).contains(&expected_coeff),
+                                "toy coefficient fixture overflowed"
+                            );
+                            let mut hasher = sha3::Shake128::default();
+                            hasher.update(b"direct-centered-restoring-final-inline-coeff-toy-v1");
+                            hasher.update(&[q_neg as u8]);
+                            let mut xof = hasher.finalize_xof();
+                            let mut sim = crate::sim::Simulator::new(num_qubits, num_bits, &mut xof);
+                            set_slice_u512_pm(&mut sim, &rem, U512::from(adjusted));
+                            set_slice_u512_pm(&mut sim, &divisor, U512::from(d));
+                            set_slice_u512_pm(
+                                &mut sim,
+                                &coeff_acc,
+                                U512::from(raw_from_i64(cu0, COEFF_W)),
+                            );
+                            set_slice_u512_pm(
+                                &mut sim,
+                                &coeff_v,
+                                U512::from(raw_from_i64(cv0, COEFF_W)),
+                            );
+                            sim.apply(&ops);
+
+                            let rem_out = i64_from_raw(
+                                get_slice_u512_pm(&sim, &rem).as_limbs()[0] & rem_mask,
+                                REM_W,
+                            );
+                            let div_out =
+                                get_slice_u512_pm(&sim, &divisor).as_limbs()[0] & div_mask;
+                            let coeff_out = i64_from_raw(
+                                get_slice_u512_pm(&sim, &coeff_acc).as_limbs()[0] & coeff_mask,
+                                COEFF_W,
+                            );
+                            let coeff_v_out = i64_from_raw(
+                                get_slice_u512_pm(&sim, &coeff_v).as_limbs()[0] & coeff_mask,
+                                COEFF_W,
+                            );
+                            let hist = get_slice_u512_pm(&sim, &digit_hist).as_limbs()[0];
+                            let neg1 = sim.qubit(final_neg1) & 1;
+                            let neg2 = sim.qubit(final_neg2) & 1;
+                            let pos_ge = sim.qubit(final_pos_ge) & 1;
+                            final_neg2_cases += neg2 as usize;
+                            final_zero_cases += ((neg1 | neg2 | pos_ge) == 0) as usize;
+                            let mut q = 0i64;
+                            for sh in 1..DIGITS {
+                                if ((hist >> sh) & 1) == 0 {
+                                    q += 1i64 << sh;
+                                } else {
+                                    q -= 1i64 << sh;
+                                }
+                            }
+                            q += pos_ge as i64;
+                            q -= neg1 as i64;
+                            q -= neg2 as i64;
+                            assert_eq!(
+                                hist & 1,
+                                0,
+                                "unused digit_hist[0] changed n={n} d={d} q_neg={q_neg}"
+                            );
+                            assert_eq!(
+                                sim.qubit(final_lt_tmp) & 1,
+                                0,
+                                "final comparator scratch leaked n={n} d={d} q_neg={q_neg}"
+                            );
+                            assert_eq!(
+                                rem_out, expected_rem,
+                                "centered remainder mismatch n={n} d={d} q_neg={q_neg}"
+                            );
+                            assert_eq!(
+                                q, expected_q,
+                                "quotient mismatch n={n} d={d} q_neg={q_neg}"
+                            );
+                            assert_eq!(
+                                coeff_out, expected_coeff,
+                                "coeff mismatch n={n} d={d} cu0={cu0} cv0={cv0} q_neg={q_neg}"
+                            );
+                            assert_eq!(
+                                coeff_v_out, cv0,
+                                "coeff_v changed n={n} d={d} cv0={cv0} q_neg={q_neg}"
+                            );
+                            assert_eq!(div_out, d, "divisor changed n={n} d={d} q_neg={q_neg}");
+                            assert_eq!(
+                                sim.global_phase() & 1,
+                                0,
+                                "unexpected phase n={n} d={d} cu0={cu0} cv0={cv0} q_neg={q_neg}"
+                            );
+                        }
+                    }
+                }
+            }
+            let suffix = if q_neg { "qneg" } else { "qpos" };
+            println!("METRIC centered_direct_restoring_final_toy_{suffix}_ccx={ccx}");
+            println!("METRIC centered_direct_restoring_final_toy_{suffix}_peak_q={peak}");
+            println!(
+                "METRIC centered_direct_restoring_final_toy_{suffix}_neg2_cases={final_neg2_cases}"
+            );
+            println!(
+                "METRIC centered_direct_restoring_final_toy_{suffix}_zero_final_cases={final_zero_cases}"
+            );
+            eprintln!(
+                "Centered direct restoring-final inline coeff toy ({suffix}): ccx={ccx}, peak={peak}, neg2_cases={final_neg2_cases}, zero_final_cases={final_zero_cases}"
+            );
+            assert!(final_neg2_cases > 0, "toy fixture did not exercise the -2 final digit");
+            assert!(final_zero_cases > 0, "toy fixture did not exercise the zero final digit");
+        }
     }
 
     #[test]
@@ -13730,6 +14118,156 @@ mod tests {
         assert!(current_p99 > 2_700_000, "baseline replay charge no longer explains the static gap");
         assert!(inline_1x_p99 < current_p99, "inline coefficient width model is not a replay improvement");
         assert!(inline_3x_gap < 0, "even 3x-width inline coefficient replay misses the low-qubit target");
+    }
+
+    #[test]
+    fn direct_centered_restoring_final_digit_removes_late_fix_budget() {
+        // The phase-clean positive-q toy and the phase-dirty negative-q toys
+        // point at the late final_negative correction as the hard part.  Replace
+        // the last non-restoring bit by a restoring ternary digit: before the
+        // sh=0 update, add on a negative remainder, subtract only when a
+        // nonnegative remainder is at least the divisor, and otherwise emit a
+        // zero digit.  This keeps the same floor quotient without a separate
+        // final-fix add or a final_negative coefficient correction.
+        let p = SECP256K1_P;
+        let samples = 32_768usize;
+        let mut rng = 0x2800_d1ce_f1f0_0001u64;
+        let n = 256usize;
+        let mut one_x_pointadds = Vec::with_capacity(samples);
+        let mut two_x_pointadds = Vec::with_capacity(samples);
+        let mut three_x_pointadds = Vec::with_capacity(samples);
+        let mut coeff_width_costs = Vec::with_capacity(samples);
+        let mut digit_payloads = Vec::with_capacity(samples);
+        let mut no_unit_final_counts = Vec::with_capacity(samples);
+        let mut counts = Vec::with_capacity(samples);
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let mut u = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(p));
+            let mut v = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(x));
+            let mut coeff_u = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut coeff_v = smag_for_halfgcd_test(false, U512::from(1u64));
+            let (mut digit_payload, mut digit_width_cost, mut count, mut no_unit_final_count) =
+                (0usize, 0usize, 0usize, 0usize);
+            let mut coeff_width_cost = 0usize;
+            while !v.mag.is_zero() {
+                let public_bound = direct_centered_public_width_bound_for_step(n, count);
+                let adjusted = u.mag + (v.mag >> 1usize);
+                let q_direct = adjusted / v.mag;
+                let old_digits = nonrestoring_floor_signed_digits_for_centered_test(adjusted, v.mag);
+                let signed_digits =
+                    nonrestoring_floor_restoring_final_digits_for_centered_test(adjusted, v.mag);
+                let old_has_final_negative = old_digits.last().copied() == Some((true, 0));
+                let new_has_unit_final = signed_digits.iter().any(|&(_, sh)| sh == 0);
+                no_unit_final_count += (!new_has_unit_final) as usize;
+                assert!(
+                    signed_digits.len() + old_has_final_negative as usize
+                        <= old_digits.len() + 2,
+                    "restoring-final helper grew the digit stream unexpectedly"
+                );
+                digit_payload += signed_digits.len();
+                digit_width_cost += signed_digits.len() * public_bound;
+
+                let q_neg = u.neg ^ v.neg;
+                let mut coeff_acc = coeff_u;
+                for &(digit_neg, sh) in &signed_digits {
+                    let term = signed_mul_mag_for_halfgcd_test(
+                        coeff_v,
+                        q_neg ^ digit_neg,
+                        U512::from(1u64) << sh,
+                    );
+                    let before = coeff_acc;
+                    coeff_acc = signed_add_for_halfgcd_test(
+                        coeff_acc,
+                        signed_neg_for_halfgcd_test(term),
+                    );
+                    let op_mag_bits = u512_bit_len_for_halfgcd_test(before.mag)
+                        .max(u512_bit_len_for_halfgcd_test(term.mag))
+                        .max(u512_bit_len_for_halfgcd_test(coeff_acc.mag));
+                    coeff_width_cost += op_mag_bits.max(1) + 1;
+                }
+                let qv_coeff = signed_mul_mag_for_halfgcd_test(coeff_v, q_neg, q_direct);
+                let coeff_direct = signed_add_for_halfgcd_test(
+                    coeff_u,
+                    signed_neg_for_halfgcd_test(qv_coeff),
+                );
+                assert_eq!(coeff_acc, coeff_direct, "restoring-final coefficient replay mismatch");
+                coeff_u = coeff_v;
+                coeff_v = coeff_acc;
+
+                count += 1;
+                let qv = signed_mul_mag_for_halfgcd_test(v, q_neg, q_direct);
+                let r = signed_add_for_halfgcd_test(u, signed_neg_for_halfgcd_test(qv));
+                u = v;
+                v = r;
+            }
+            assert_eq!(u.mag, U512::from(1u64), "restoring-final trace ended at non-unit gcd");
+            let coeff_mod = signed_u512_mod_u256_for_centered_test(coeff_u, p);
+            let gcd_mod = signed_u512_mod_u256_for_centered_test(u, p);
+            assert_eq!(
+                coeff_mod.mul_mod(x, p),
+                gcd_mod,
+                "restoring-final inline coefficient is not the denominator inverse up to gcd sign"
+            );
+            let public_width_sum = (0..count)
+                .map(|step| direct_centered_public_width_bound_for_step(n, step))
+                .sum::<usize>();
+            let inactive_positions_tapered = public_width_sum - digit_payload;
+            let barrel_and_scan_tapered = public_width_sum * (8usize + 1usize);
+            let final_select_1x = public_width_sum;
+            let pointadd_for = |select_factor: usize| -> isize {
+                let extraction_oneway = digit_width_cost
+                    + barrel_and_scan_tapered
+                    + select_factor * final_select_1x
+                    + inactive_positions_tapered;
+                642_716isize + 2 * (3 * coeff_width_cost + 2 * extraction_oneway) as isize
+            };
+            one_x_pointadds.push(pointadd_for(1));
+            two_x_pointadds.push(pointadd_for(2));
+            three_x_pointadds.push(pointadd_for(3));
+            coeff_width_costs.push(coeff_width_cost);
+            digit_payloads.push(digit_payload);
+            no_unit_final_counts.push(no_unit_final_count);
+            counts.push(count);
+        }
+        one_x_pointadds.sort_unstable();
+        two_x_pointadds.sort_unstable();
+        three_x_pointadds.sort_unstable();
+        coeff_width_costs.sort_unstable();
+        digit_payloads.sort_unstable();
+        no_unit_final_counts.sort_unstable();
+        counts.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let one_x_p99 = one_x_pointadds[p99];
+        let two_x_p99 = two_x_pointadds[p99];
+        let three_x_p99 = three_x_pointadds[p99];
+        let one_x_gap = one_x_p99 - 2_700_000isize;
+        let two_x_gap = two_x_p99 - 2_700_000isize;
+        let three_x_gap = three_x_p99 - 2_700_000isize;
+        let coeff_width_p99 = coeff_width_costs[p99];
+        let digit_payload_p99 = digit_payloads[p99];
+        let no_unit_final_p99 = no_unit_final_counts[p99];
+        let count_p99 = counts[p99];
+        println!("METRIC centered_direct_restoring_final_samples={samples}");
+        println!("METRIC centered_direct_restoring_final_coeff_width_p99={coeff_width_p99}");
+        println!("METRIC centered_direct_restoring_final_digit_payload_p99={digit_payload_p99}");
+        println!("METRIC centered_direct_restoring_final_no_unit_digits_p99={no_unit_final_p99}");
+        println!("METRIC centered_direct_restoring_final_count_p99={count_p99}");
+        println!("METRIC centered_direct_restoring_final_select1x_p99={one_x_p99}");
+        println!("METRIC centered_direct_restoring_final_select2x_p99={two_x_p99}");
+        println!("METRIC centered_direct_restoring_final_select3x_p99={three_x_p99}");
+        println!("METRIC centered_direct_restoring_final_select1x_gap_to_2700k={one_x_gap}");
+        println!("METRIC centered_direct_restoring_final_select2x_gap_to_2700k={two_x_gap}");
+        println!("METRIC centered_direct_restoring_final_select3x_gap_to_2700k={three_x_gap}");
+        eprintln!(
+            "Direct-centered restoring-final digit budget: coeff_width_p99={coeff_width_p99}, digit_payload_p99={digit_payload_p99}, no_unit_final_p99={no_unit_final_p99}, count_p99={count_p99}, select1x={one_x_p99}, select2x={two_x_p99}, select3x={three_x_p99}, gaps=({one_x_gap},{two_x_gap},{three_x_gap})"
+        );
+        assert!(
+            two_x_gap < 0,
+            "restoring-final digit cannot afford a 2x-width final selector"
+        );
     }
 
     #[test]
