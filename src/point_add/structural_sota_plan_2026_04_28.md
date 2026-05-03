@@ -1736,6 +1736,20 @@ This promotes the direct-centered route from "digit primitive only" to
 ready: the missing hard piece is a real 256-bit packed extractor with dynamic
 boundary/parser cleanup and integration with coefficient replay.
 
+The margin is extremely narrow.  `direct_centered_nonrestoring_inactive_digit_tax_kills_margin`
+charges just one CCX for every skipped static digit position:
+
+```text
+p99 static digit positions     = 30,208
+p99 active digit payload       = 397
+p99 inactive digit positions   = 29,811
+one-CCX inactive tax gap       = +44,252 CCX
+```
+
+So a production extractor must avoid Toffoli work on inactive quotient-digit
+positions.  A controlled full-width scan over all 256 positions per quotient is
+not acceptable even with a one-CCX inactive body.
+
 ## 6. Post-BY ground-up attempt: Strategy E slope-coordinate map
 
 New non-BY candidate: make the slope the live y-coordinate and avoid an

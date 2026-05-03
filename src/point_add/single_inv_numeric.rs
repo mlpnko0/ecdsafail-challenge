@@ -9023,6 +9023,33 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_nonrestoring_inactive_digit_tax_kills_margin() {
+        // The direct-centered extractor is viable only if the dynamic boundary
+        // is genuinely packed.  After charging the current final-fix primitive,
+        // the total point-add slack is just 74,992 CCX; one Toffoli on each
+        // skipped static digit position already exceeds that slack.
+        let digit_payload_p99 = 397usize;
+        let count_p99 = 118usize;
+        let final_p99 = 69usize;
+        let static_digit_positions = count_p99 * 256usize;
+        let inactive_positions = static_digit_positions - digit_payload_p99;
+        let replay_per_div = (digit_payload_p99 + final_p99) * 587usize;
+        let barrel_and_scan = count_p99 * (256usize * 8usize + 256usize);
+        let final_fix_current = count_p99 * (2usize * 256usize - 1usize);
+        let extraction_oneway = digit_payload_p99 * 256usize
+            + barrel_and_scan
+            + final_fix_current
+            + inactive_positions;
+        let pointadd = 642_716isize + 2 * (replay_per_div + 2 * extraction_oneway) as isize;
+        let gap = pointadd - 3_000_000isize;
+        println!("METRIC centered_direct_round_static_digit_positions_p99={static_digit_positions}");
+        println!("METRIC centered_direct_round_inactive_digit_positions_p99={inactive_positions}");
+        println!("METRIC centered_direct_round_one_ccx_inactive_tax_gap={gap}");
+        eprintln!("Centered direct-rounding inactive digit tax: static_positions={static_digit_positions}, inactive_positions={inactive_positions}, one_ccx_gap={gap}");
+        assert!(gap > 0, "one-CCX inactive digit tax still fits; packed-boundary requirement is less strict");
+    }
+
+    #[test]
     fn euclid_quotient_stream_entropy_also_exceeds_scratch600() {
         // Follow-up to the raw-payload quotient-stream DIV test.  The tempting
         // objection is that a clever prefix/arithmetic code could pack the
