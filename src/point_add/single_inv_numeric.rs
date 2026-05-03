@@ -10816,6 +10816,166 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_prefinal_minus_one_inline_coeff_budget_probe() {
+        // Complementary fixed-bias route: append an unconditional -1 low digit
+        // to the pre-final non-restoring quotient.  This still avoids the late
+        // final_negative control, replacing it with a fixed half-divisor
+        // remainder correction and an unconditional coefficient update.  The
+        // question is whether this keeps Euclid iteration counts near the
+        // centered route instead of the slow q_pre route above.
+        let p = SECP256K1_P;
+        let samples = 32_768usize;
+        let mut rng = 0x2800_d1ce_b1a5_0001u64;
+        let n = 256usize;
+        let mut pointadds = Vec::with_capacity(samples);
+        let mut coeff_width_costs = Vec::with_capacity(samples);
+        let mut counts = Vec::with_capacity(samples);
+        let mut digit_payloads = Vec::with_capacity(samples);
+        let mut width_extras = Vec::with_capacity(samples);
+        let mut nonterminating = 0usize;
+        let half_add_costs = (0..=(2 * n + 8))
+            .map(|w| if w == 0 { 0 } else { centered_prefinal_half_sub_cost_for_centered_test(w) })
+            .collect::<Vec<_>>();
+        for _ in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let mut u = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(p));
+            let mut v = smag_for_halfgcd_test(false, u512_from_u256_for_halfgcd_test(x));
+            let mut coeff_u = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut coeff_v = smag_for_halfgcd_test(false, U512::from(1u64));
+            let (mut digit_payload, mut digit_width_cost, mut count) =
+                (0usize, 0usize, 0usize);
+            let mut coeff_width_cost = 0usize;
+            let mut max_width_extra = 0usize;
+            let mut half_add_tapered = 0usize;
+            let mut barrel_and_scan_tapered = 0usize;
+            let mut inactive_positions_tapered = 0usize;
+            while !v.mag.is_zero() && count < 1024 {
+                let base_bound = direct_centered_public_width_bound_for_step(n, count);
+                let width = u512_bit_len_for_halfgcd_test(u.mag)
+                    .max(u512_bit_len_for_halfgcd_test(v.mag))
+                    .max(1);
+                max_width_extra = max_width_extra.max(width.saturating_sub(base_bound));
+                let public_bound = width;
+                let adjusted = u.mag + (v.mag >> 1usize);
+                let (signed_digits, _raw_adjusted_rem, q_pre) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(adjusted, v.mag);
+                digit_payload += signed_digits.len();
+                digit_width_cost += signed_digits.len() * public_bound;
+                half_add_tapered += if public_bound < half_add_costs.len() {
+                    half_add_costs[public_bound]
+                } else {
+                    centered_prefinal_half_sub_cost_for_centered_test(public_bound)
+                };
+                barrel_and_scan_tapered += public_bound * (8usize + 1usize);
+                inactive_positions_tapered += public_bound - signed_digits.len();
+
+                let q_neg = u.neg ^ v.neg;
+                let mut coeff_acc = coeff_u;
+                for &(digit_neg, sh) in signed_digits.iter().chain(std::iter::once(&(true, 0usize))) {
+                    let term = signed_mul_mag_for_halfgcd_test(
+                        coeff_v,
+                        q_neg ^ digit_neg,
+                        U512::from(1u64) << sh,
+                    );
+                    let before = coeff_acc;
+                    coeff_acc = signed_add_for_halfgcd_test(
+                        coeff_acc,
+                        signed_neg_for_halfgcd_test(term),
+                    );
+                    let op_mag_bits = u512_bit_len_for_halfgcd_test(before.mag)
+                        .max(u512_bit_len_for_halfgcd_test(term.mag))
+                        .max(u512_bit_len_for_halfgcd_test(coeff_acc.mag));
+                    coeff_width_cost += op_mag_bits.max(1) + 1;
+                }
+                let q_direct = signed_add_for_halfgcd_test(
+                    smag_for_halfgcd_test(false, q_pre),
+                    smag_for_halfgcd_test(true, U512::from(1u64)),
+                );
+                let qv_coeff = signed_mul_mag_for_halfgcd_test(
+                    coeff_v,
+                    q_neg ^ q_direct.neg,
+                    q_direct.mag,
+                );
+                let coeff_direct = signed_add_for_halfgcd_test(
+                    coeff_u,
+                    signed_neg_for_halfgcd_test(qv_coeff),
+                );
+                assert_eq!(coeff_acc, coeff_direct, "prefinal minus-one coefficient replay mismatch");
+                coeff_u = coeff_v;
+                coeff_v = coeff_acc;
+
+                let qv = signed_mul_mag_for_halfgcd_test(v, q_neg ^ q_direct.neg, q_direct.mag);
+                let r = signed_add_for_halfgcd_test(u, signed_neg_for_halfgcd_test(qv));
+                u = v;
+                v = r;
+                count += 1;
+            }
+            if !v.mag.is_zero() {
+                nonterminating += 1;
+                pointadds.push(99_999_999isize);
+                coeff_width_costs.push(coeff_width_cost);
+                counts.push(count);
+                digit_payloads.push(digit_payload);
+                width_extras.push(max_width_extra);
+                continue;
+            }
+            assert_eq!(u.mag, U512::from(1u64), "prefinal minus-one trace ended at non-unit gcd");
+            let coeff_mod = signed_u512_mod_u256_for_centered_test(coeff_u, p);
+            let gcd_mod = signed_u512_mod_u256_for_centered_test(u, p);
+            assert_eq!(
+                coeff_mod.mul_mod(x, p),
+                gcd_mod,
+                "prefinal minus-one coefficient is not the denominator inverse up to gcd sign"
+            );
+            let extraction_oneway = digit_width_cost
+                + barrel_and_scan_tapered
+                + half_add_tapered
+                + inactive_positions_tapered;
+            let pointadd = 642_716isize + 2 * (3 * coeff_width_cost + 2 * extraction_oneway) as isize;
+            pointadds.push(pointadd);
+            coeff_width_costs.push(coeff_width_cost);
+            counts.push(count);
+            digit_payloads.push(digit_payload);
+            width_extras.push(max_width_extra);
+        }
+        pointadds.sort_unstable();
+        coeff_width_costs.sort_unstable();
+        counts.sort_unstable();
+        digit_payloads.sort_unstable();
+        width_extras.sort_unstable();
+        let p99 = samples * 99 / 100;
+        let pointadd_p99 = pointadds[p99];
+        let coeff_width_p99 = coeff_width_costs[p99];
+        let count_p99 = counts[p99];
+        let digit_payload_p99 = digit_payloads[p99];
+        let width_extra_p99 = width_extras[p99];
+        let width_extra_max = *width_extras.last().unwrap();
+        let gap = pointadd_p99 - 2_700_000isize;
+        println!("METRIC centered_direct_prefinal_minus_one_pointadd_p99={pointadd_p99}");
+        println!("METRIC centered_direct_prefinal_minus_one_coeff_width_p99={coeff_width_p99}");
+        println!("METRIC centered_direct_prefinal_minus_one_count_p99={count_p99}");
+        println!("METRIC centered_direct_prefinal_minus_one_digit_payload_p99={digit_payload_p99}");
+        println!("METRIC centered_direct_prefinal_minus_one_width_extra_p99={width_extra_p99}");
+        println!("METRIC centered_direct_prefinal_minus_one_width_extra_max={width_extra_max}");
+        println!("METRIC centered_direct_prefinal_minus_one_nonterminating={nonterminating}");
+        println!("METRIC centered_direct_prefinal_minus_one_gap_to_2700k={gap}");
+        eprintln!(
+            "Direct-centered prefinal minus-one inline budget: pointadd_p99={pointadd_p99}, coeff_width_p99={coeff_width_p99}, count_p99={count_p99}, digit_payload_p99={digit_payload_p99}, width_extra_p99={width_extra_p99}, width_extra_max={width_extra_max}, nonterminating={nonterminating}, gap={gap}"
+        );
+        assert!(
+            nonterminating > 0,
+            "prefinal minus-one did not exercise the expected nonterminating dead end"
+        );
+        assert!(
+            gap > 0,
+            "prefinal minus-one inline route reaches the low-qubit target; promote to implementation"
+        );
+    }
+
+    #[test]
     fn direct_centered_centered_remainder_final_fix_is_phase_clean_but_not_free() {
         // Alternative final cleanup for the direct-centered non-restoring
         // extractor: instead of conditionally adding the full divisor to make
