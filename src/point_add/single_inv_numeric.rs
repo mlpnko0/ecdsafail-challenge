@@ -4098,6 +4098,229 @@ mod tests {
     }
 
     #[test]
+    fn half_gcd_second_column_prefix_coeff_decoder_average_gate() {
+        // The p99 half-GCD second-column ledger misses only after charging the
+        // coefficient q-decoder.  Measure the same-trace average, including the
+        // scan-free arithmetic floor, before spending effort on an implementation.
+        const SCAFFOLD_AFTER_DIV: usize = 642_716;
+        const TAIL_REPLAY_PER_BIT_CCX: usize = 587;
+        const TARGET: f64 = 2_700_000.0;
+
+        let p = SECP256K1_P;
+        let samples = 8192usize;
+        let mut rng = 0x5ec0_0001_dec0_a64u64;
+        let exact_barrel_bits = 8usize;
+        let mut base_exact = Vec::with_capacity(samples);
+        let mut aug_exact = Vec::with_capacity(samples);
+        let mut aug_noscan = Vec::with_capacity(samples);
+        let mut decoder_exact_rows = Vec::with_capacity(samples);
+        let mut decoder_noscan_rows = Vec::with_capacity(samples);
+        let mut first64_base = 0isize;
+        let mut first64_aug_exact = 0isize;
+        let mut first64_aug_noscan = 0isize;
+
+        for sample_idx in 0..samples {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let mut u = p;
+            let mut v = x;
+            let mut b = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut d = smag_for_halfgcd_test(false, U512::from(1u64));
+            let mut residual_digit_width = 0usize;
+            let mut coeff_digit_width = 0usize;
+            let mut final_fix_width = 0usize;
+            let mut residual_width_sum = 0usize;
+            let mut coeff_width_sum = 0usize;
+            let mut decoder_digit = 0usize;
+            let mut decoder_final_fix = 0usize;
+            let mut decoder_width_sum = 0usize;
+
+            while !v.is_zero() && u256_bit_len(u).max(u256_bit_len(v)) > 128 {
+                let q = u / v;
+                let (digits, prefinal_rem, prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(
+                        u512_from_u256_for_halfgcd_test(u),
+                        u512_from_u256_for_halfgcd_test(v),
+                    );
+                let final_negative = prefinal_rem.neg && !prefinal_rem.mag.is_zero();
+                let floor_q = if final_negative {
+                    prefinal_q - U512::from(1u64)
+                } else {
+                    prefinal_q
+                };
+                assert_eq!(floor_q, u512_from_u256_for_halfgcd_test(q));
+                let width = u256_bit_len(u).max(u256_bit_len(v));
+                let coeff_width = u512_bit_len_for_halfgcd_test(b.mag)
+                    .max(u512_bit_len_for_halfgcd_test(d.mag))
+                    .max(1)
+                    + 1;
+                residual_digit_width += digits.len() * width.saturating_sub(1);
+                final_fix_width += (2 * width).saturating_sub(1)
+                    + (2 * coeff_width).saturating_sub(1);
+                residual_width_sum += width;
+                coeff_width_sum += coeff_width;
+
+                let mut coeff_acc = b;
+                for &(digit_neg, sh) in &digits {
+                    let term = signed_mul_mag_for_halfgcd_test(
+                        d,
+                        digit_neg,
+                        U512::from(1u64) << sh,
+                    );
+                    let next = signed_add_for_halfgcd_test(
+                        coeff_acc,
+                        signed_neg_for_halfgcd_test(term),
+                    );
+                    let op_width = u512_bit_len_for_halfgcd_test(coeff_acc.mag)
+                        .max(u512_bit_len_for_halfgcd_test(term.mag))
+                        .max(u512_bit_len_for_halfgcd_test(next.mag))
+                        .max(1)
+                        + 1;
+                    coeff_digit_width += op_width.saturating_sub(1);
+                    coeff_acc = next;
+                }
+                if final_negative {
+                    coeff_acc = signed_add_for_halfgcd_test(coeff_acc, d);
+                }
+
+                let rem = u - q * v;
+                let nb = d;
+                let nd = signed_sub_scaled_for_halfgcd_test(b, q, d);
+                assert_eq!(coeff_acc, nd, "second-column signed digit replay mismatch");
+
+                let numer = if b.mag.is_zero() {
+                    nd.mag
+                } else {
+                    nd.mag - U512::from(1u64)
+                };
+                let denom = nb.mag;
+                assert!(!denom.is_zero(), "reverse coefficient denominator vanished");
+                assert_eq!(
+                    numer / denom,
+                    u512_from_u256_for_halfgcd_test(q),
+                    "coefficient reverse quotient formula mismatch"
+                );
+                let (decoder_digits, decoder_prefinal_rem, decoder_prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(numer, denom);
+                let decoder_final_negative =
+                    decoder_prefinal_rem.neg && !decoder_prefinal_rem.mag.is_zero();
+                let decoder_floor_q = if decoder_final_negative {
+                    decoder_prefinal_q - U512::from(1u64)
+                } else {
+                    decoder_prefinal_q
+                };
+                assert_eq!(decoder_floor_q, u512_from_u256_for_halfgcd_test(q));
+                let decoder_width = u512_bit_len_for_halfgcd_test(numer)
+                    .max(u512_bit_len_for_halfgcd_test(denom))
+                    .max(1);
+                decoder_digit += decoder_digits.len() * decoder_width.saturating_sub(1);
+                decoder_final_fix += (2 * decoder_width).saturating_sub(1);
+                decoder_width_sum += decoder_width;
+
+                u = v;
+                v = rem;
+                b = nb;
+                d = nd;
+            }
+
+            let mut tail_payload = 0usize;
+            let mut tu = u;
+            let mut tv = v;
+            while !tv.is_zero() {
+                let q = tu / tv;
+                tail_payload += u256_bit_len(q);
+                let rem = tu - q * tv;
+                tu = tv;
+                tv = rem;
+            }
+            assert_eq!(tu, U256::from(1u64), "tail replay did not finish at gcd 1");
+
+            let exact_extraction = residual_digit_width
+                + coeff_digit_width
+                + final_fix_width
+                + (residual_width_sum + coeff_width_sum) * (exact_barrel_bits + 1);
+            let app = halfgcd_signed_two_coeff_apply_cost_for_test(b, d);
+            let replay = tail_payload * TAIL_REPLAY_PER_BIT_CCX;
+            let base = SCAFFOLD_AFTER_DIV as isize
+                + 2 * (app + replay + 2 * exact_extraction) as isize;
+            let decoder_noscan = (decoder_digit + decoder_final_fix) as isize;
+            let decoder_exact =
+                (decoder_digit + decoder_final_fix + decoder_width_sum * (exact_barrel_bits + 1))
+                    as isize;
+            let exact = base + 4 * decoder_exact;
+            let noscan = base + 4 * decoder_noscan;
+
+            if sample_idx < 64 {
+                first64_base += base;
+                first64_aug_exact += exact;
+                first64_aug_noscan += noscan;
+            }
+            base_exact.push(base);
+            aug_exact.push(exact);
+            aug_noscan.push(noscan);
+            decoder_exact_rows.push(decoder_exact);
+            decoder_noscan_rows.push(decoder_noscan);
+        }
+
+        let mean = |rows: &[isize]| -> f64 {
+            rows.iter().map(|&v| v as f64).sum::<f64>() / rows.len() as f64
+        };
+        let p99_of = |rows: &mut Vec<isize>| -> isize {
+            rows.sort_unstable();
+            rows[rows.len() * 99 / 100]
+        };
+        let base_mean = mean(&base_exact);
+        let exact_mean = mean(&aug_exact);
+        let noscan_mean = mean(&aug_noscan);
+        let decoder_exact_mean = mean(&decoder_exact_rows);
+        let decoder_noscan_mean = mean(&decoder_noscan_rows);
+        let base_first64 = first64_base as f64 / 64.0;
+        let exact_first64 = first64_aug_exact as f64 / 64.0;
+        let noscan_first64 = first64_aug_noscan as f64 / 64.0;
+        let base_p99 = p99_of(&mut base_exact);
+        let exact_p99 = p99_of(&mut aug_exact);
+        let noscan_p99 = p99_of(&mut aug_noscan);
+        let decoder_exact_p99 = p99_of(&mut decoder_exact_rows);
+        let decoder_noscan_p99 = p99_of(&mut decoder_noscan_rows);
+        println!("METRIC halfgcd_second_col_prefix_avg_samples={samples}");
+        println!("METRIC halfgcd_second_col_prefix_avg_exact_base_mean={base_mean:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_exact_base_first64={base_first64:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_exact_base_p99={base_p99}");
+        println!("METRIC halfgcd_second_col_prefix_avg_decoder_exact_mean={decoder_exact_mean:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_decoder_exact_p99={decoder_exact_p99}");
+        println!("METRIC halfgcd_second_col_prefix_avg_decoder_noscan_mean={decoder_noscan_mean:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_decoder_noscan_p99={decoder_noscan_p99}");
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_exact_mean={exact_mean:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_exact_first64={exact_first64:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_exact_p99={exact_p99}");
+        println!(
+            "METRIC halfgcd_second_col_prefix_avg_aug_exact_gap_to_2700k={:.3}",
+            exact_mean - TARGET
+        );
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_noscan_mean={noscan_mean:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_noscan_first64={noscan_first64:.3}");
+        println!("METRIC halfgcd_second_col_prefix_avg_aug_noscan_p99={noscan_p99}");
+        println!(
+            "METRIC halfgcd_second_col_prefix_avg_aug_noscan_gap_to_2700k={:.3}",
+            noscan_mean - TARGET
+        );
+        eprintln!(
+            "half-GCD second-column prefix average gate: base_mean={base_mean:.1}, exact_mean={exact_mean:.1}, exact_first64={exact_first64:.1}, noscan_mean={noscan_mean:.1}, noscan_first64={noscan_first64:.1}, p99 exact/noscan=({exact_p99},{noscan_p99})"
+        );
+        assert!(base_mean < TARGET && base_first64 < TARGET, "base exact prefix average lost its margin");
+        assert!(
+            exact_mean < TARGET && exact_first64 < TARGET && exact_p99 > TARGET as isize,
+            "half-GCD exact decoder average no longer fits only as an average-gate route"
+        );
+        assert!(
+            noscan_mean < TARGET && noscan_first64 < TARGET && noscan_p99 < TARGET as isize,
+            "half-GCD scan-free lower bound no longer has full sampled margin"
+        );
+    }
+
+    #[test]
     fn half_gcd_second_column_schedule_removes_matrix_extraction_scratch_blocker() {
         // Unlike a determinant-compressed full matrix, the second column can be
         // generated and updated directly during the prefix loop.  Price the

@@ -145,7 +145,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "halfgcd_second_column_tail_stream",
             scratch_bits: 514,
             charged_toffoli: None,
-            blocker: "second-column live/tail state fits, but residual-only reverse q is ambiguous and coefficient-division q cleanup adds 81879 p99 one-way CCX",
+            blocker: "second-column exact decoder average model fits at 2606688, but no phase-clean prefix extractor circuit is implemented and p99 remains 2856574",
         },
         Candidate {
             name: "folded_kaliski_one_pair_plus_required_sidecar",
@@ -383,6 +383,23 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let halfgcd_second_col_prefix_coeff_decoder_no_scan_p99 = 26_796usize;
     let halfgcd_second_col_prefix_coeff_decoder_scan_budget = 3_141usize;
     let halfgcd_second_col_prefix_coeff_decoder_scan_over_budget = 51_975isize;
+    let halfgcd_second_col_prefix_avg_exact_base_mean = 2_336_737usize;
+    let halfgcd_second_col_prefix_avg_exact_base_first64 = 2_347_685usize;
+    let halfgcd_second_col_prefix_avg_exact_base_p99 = 2_539_226usize;
+    let halfgcd_second_col_prefix_avg_decoder_exact_mean = 67_488usize;
+    let halfgcd_second_col_prefix_avg_decoder_exact_p99 = 81_425usize;
+    let halfgcd_second_col_prefix_avg_decoder_noscan_mean = 23_150usize;
+    let halfgcd_second_col_prefix_avg_decoder_noscan_p99 = 26_641usize;
+    let halfgcd_second_col_prefix_avg_aug_exact_mean = 2_606_688usize;
+    let halfgcd_second_col_prefix_avg_aug_exact_first64 = 2_624_897usize;
+    let halfgcd_second_col_prefix_avg_aug_exact_p99 = 2_856_574usize;
+    let halfgcd_second_col_prefix_avg_aug_exact_gap =
+        halfgcd_second_col_prefix_avg_aug_exact_mean as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
+    let halfgcd_second_col_prefix_avg_aug_noscan_mean = 2_429_337usize;
+    let halfgcd_second_col_prefix_avg_aug_noscan_first64 = 2_442_020usize;
+    let halfgcd_second_col_prefix_avg_aug_noscan_p99 = 2_643_668usize;
+    let halfgcd_second_col_prefix_avg_aug_noscan_gap =
+        halfgcd_second_col_prefix_avg_aug_noscan_mean as isize - GOOGLE_LOW_QUBIT_TOFFOLI as isize;
 
     eprintln!("\nScratch-600 architecture frontier:");
     for c in candidates {
@@ -593,6 +610,21 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_halfgcd_second_col_prefix_exact_extraction_p99={halfgcd_second_col_prefix_exact_extraction_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_exact_pointadd_p99={halfgcd_second_col_prefix_exact_pointadd_p99}");
     println!("METRIC scratch600_halfgcd_second_col_prefix_exact_gap_to_2700k={halfgcd_second_col_prefix_exact_gap_to_2700k}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_exact_base_mean={halfgcd_second_col_prefix_avg_exact_base_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_exact_base_first64={halfgcd_second_col_prefix_avg_exact_base_first64}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_exact_base_p99={halfgcd_second_col_prefix_avg_exact_base_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_decoder_exact_mean={halfgcd_second_col_prefix_avg_decoder_exact_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_decoder_exact_p99={halfgcd_second_col_prefix_avg_decoder_exact_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_decoder_noscan_mean={halfgcd_second_col_prefix_avg_decoder_noscan_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_decoder_noscan_p99={halfgcd_second_col_prefix_avg_decoder_noscan_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_exact_mean={halfgcd_second_col_prefix_avg_aug_exact_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_exact_first64={halfgcd_second_col_prefix_avg_aug_exact_first64}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_exact_p99={halfgcd_second_col_prefix_avg_aug_exact_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_exact_gap_to_2700k={halfgcd_second_col_prefix_avg_aug_exact_gap}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_noscan_mean={halfgcd_second_col_prefix_avg_aug_noscan_mean}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_noscan_first64={halfgcd_second_col_prefix_avg_aug_noscan_first64}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_noscan_p99={halfgcd_second_col_prefix_avg_aug_noscan_p99}");
+    println!("METRIC scratch600_halfgcd_second_col_prefix_avg_aug_noscan_gap_to_2700k={halfgcd_second_col_prefix_avg_aug_noscan_gap}");
 
     assert!(best_state <= STRICT_SCRATCH, "at least some state shapes fit");
     assert!(streamed_gap_to_google > 0, "no fully charged <=600-scratch row should be counted as solved yet");
@@ -785,5 +817,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && halfgcd_second_col_prefix_coeff_decoder_scan_budget < 4_000
             && halfgcd_second_col_prefix_coeff_decoder_scan_over_budget > 40_000,
         "half-GCD coefficient decoder alignment budget changed; revisit q-cleanup route"
+    );
+    assert!(
+        halfgcd_second_col_prefix_avg_aug_exact_gap < 0
+            && halfgcd_second_col_prefix_avg_aug_exact_first64 < GOOGLE_LOW_QUBIT_TOFFOLI
+            && halfgcd_second_col_prefix_avg_aug_exact_p99 > GOOGLE_LOW_QUBIT_TOFFOLI,
+        "half-GCD exact-decoder average route changed; revisit implementation priority"
+    );
+    assert!(
+        halfgcd_second_col_prefix_avg_aug_noscan_gap < 0
+            && halfgcd_second_col_prefix_avg_aug_noscan_p99 < GOOGLE_LOW_QUBIT_TOFFOLI,
+        "half-GCD scan-free lower bound no longer has full sampled margin"
     );
 }
