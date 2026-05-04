@@ -22007,6 +22007,34 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_restoring_final_high_branch_has_no_sign_formula() {
+        // The signnorm route had a cheap det-low2 xor coeff-sign recovery
+        // formula.  Check the analogous restoring-final high/low candidate
+        // selector before spending parser effort on it.  Even granting all live
+        // row signs plus determinant sign and decoded quotient sign, no affine
+        // xor formula recovers the high-candidate bit on exact toy domains.
+        let cases = [(8usize, 251u16), (10, 1021), (12, 4093), (14, 16381)];
+        for &(n, p) in &cases {
+            let (ambiguous, high_count, best_mismatches, best_mask) =
+                direct_centered_restoring_final_high_branch_sign_formula_stats(p);
+            eprintln!(
+                "direct-centered restoring-final high-branch sign formula: n={n}, ambiguous={ambiguous}, high={high_count}, best_mismatches={best_mismatches}, best_mask={best_mask:#x}"
+            );
+            if n == 14 {
+                println!("METRIC centered_direct_restoring_final_high_branch_sign_formula_ambiguous_n14={ambiguous}");
+                println!("METRIC centered_direct_restoring_final_high_branch_sign_formula_high_n14={high_count}");
+                println!("METRIC centered_direct_restoring_final_high_branch_sign_formula_best_mismatches_n14={best_mismatches}");
+                println!("METRIC centered_direct_restoring_final_high_branch_sign_formula_best_mask_n14={best_mask}");
+            }
+            assert!(ambiguous > 0 && high_count > 0, "toy field did not exercise high/low branch");
+            assert!(
+                best_mismatches > 0,
+                "live sign/determinant xor formula recovers restoring-final high branch; promote decoder"
+            );
+        }
+    }
+
+    #[test]
     fn direct_centered_restoring_final_low_branch_is_exact_adjacent_on_toys() {
         // Branch-as-final-digit depends on the high candidate being exactly
         // low_q+1 whenever the coefficient reverse decoder is ambiguous.  The
@@ -33466,6 +33494,77 @@ mod tests {
             .max()
             .unwrap_or(0);
         (degree, density, max_high_count, total_high_count)
+    }
+
+    fn direct_centered_restoring_final_high_branch_sign_formula_stats(
+        p: u16,
+    ) -> (usize, usize, usize, usize) {
+        let mut rows = Vec::<(u8, [u8; 6])>::new();
+        for x in 1..p {
+            let mut u = p as i128;
+            let mut v = x as i128;
+            let mut coeff_u = 0i128;
+            let mut coeff_v = 1i128;
+            while v != 0 {
+                let abs_u = u.unsigned_abs();
+                let abs_v = v.unsigned_abs();
+                let adjusted = abs_u + (abs_v >> 1);
+                let q_abs = adjusted / abs_v;
+                let q_signed = if (u < 0) ^ (v < 0) {
+                    -(q_abs as i128)
+                } else {
+                    q_abs as i128
+                };
+                let next_v = u - q_signed * v;
+                let next_coeff_v = coeff_u - q_signed * coeff_v;
+                if coeff_u != 0 {
+                    let nb_abs = coeff_v.unsigned_abs();
+                    let nd_abs = next_coeff_v.unsigned_abs();
+                    let low_q_abs = (nd_abs - 1) / nb_abs;
+                    let high_q_abs = (nd_abs + nb_abs - 1) / nb_abs;
+                    if low_q_abs != high_q_abs {
+                        let det = v * next_coeff_v - next_v * coeff_v;
+                        let decoded_q_neg = !((next_coeff_v < 0) ^ (coeff_v < 0));
+                        rows.push((
+                            (q_abs == high_q_abs) as u8,
+                            [
+                                (det > 0) as u8,
+                                (coeff_v < 0) as u8,
+                                (next_coeff_v < 0) as u8,
+                                (v < 0) as u8,
+                                (next_v < 0) as u8,
+                                decoded_q_neg as u8,
+                            ],
+                        ));
+                    }
+                }
+                u = v;
+                v = next_v;
+                coeff_u = coeff_v;
+                coeff_v = next_coeff_v;
+            }
+        }
+
+        let mut best_mask = 0usize;
+        let mut best_mismatches = rows.len();
+        for mask in 0usize..(1usize << (1 + 6)) {
+            let mut mismatches = 0usize;
+            for &(target, features) in &rows {
+                let mut value = (mask & 1) as u8;
+                for (idx, feature) in features.iter().copied().enumerate() {
+                    if ((mask >> (idx + 1)) & 1) != 0 {
+                        value ^= feature;
+                    }
+                }
+                mismatches += (value != target) as usize;
+            }
+            if mismatches < best_mismatches {
+                best_mismatches = mismatches;
+                best_mask = mask;
+            }
+        }
+        let high_count = rows.iter().filter(|&&(target, _)| target != 0).count();
+        (rows.len(), high_count, best_mismatches, best_mask)
     }
 
     fn direct_centered_restoring_final_low_branch_adjacent_stats(

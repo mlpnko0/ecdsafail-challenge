@@ -193,7 +193,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_mixed4to8_joint_binary_floor",
             scratch_bits: 663,
             charged_toffoli: Some(2_693_369),
-            blocker: "joint block-pattern binary-depth floor would clear 2.7M by 6631 at 663 scratch, but assumes a phase-clean block-rank decoder; exact n14 rank parity is degree 14 and 8098/16384 dense, selective adjacent-pair grouping saves only 26.9 of 1084.9 needed, and arbitrary full-scan support is 68058 rows and misses by 498777",
+            blocker: "joint block-pattern binary-depth floor would clear 2.7M by 6631 at 663 scratch, but assumes a phase-clean block-rank decoder; exact n14 rank parity is degree 14 and 8098/16384 dense, cheap sign/determinant xor branch recovery still misses 25324/89008 exact toy rows, selective adjacent-pair grouping saves only 26.9 of 1084.9 needed, and arbitrary full-scan support is 68058 rows and misses by 498777",
         },
         Candidate {
             name: "direct_centered_restoring_final_mixed67_huffman_floor",
@@ -541,6 +541,11 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     let direct_restoring_final_reverse_coeff_high_branch_density_n14 = 8_208usize;
     let direct_restoring_final_reverse_coeff_high_branch_max_count_n14 = 8usize;
     let direct_restoring_final_reverse_coeff_high_branch_total_n14 = 40_112usize;
+    let direct_restoring_final_reverse_coeff_high_branch_sign_formula_ambiguous_n14 = 89_008usize;
+    let direct_restoring_final_reverse_coeff_high_branch_sign_formula_high_n14 = 40_112usize;
+    let direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mismatches_n14 =
+        25_324usize;
+    let direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mask_n14 = 11usize;
     let direct_restoring_final_reverse_coeff_candidates_max_q_bits_n14 = 14usize;
     let direct_restoring_final_reverse_coeff_candidates_max_coeff_abs_bits_n14 = 14usize;
     let direct_restoring_final_low_branch_adjacent_transitions_n14 = 105_388usize;
@@ -2060,6 +2065,10 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_density_n14={direct_restoring_final_reverse_coeff_high_branch_density_n14}");
     println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_max_count_n14={direct_restoring_final_reverse_coeff_high_branch_max_count_n14}");
     println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_total_n14={direct_restoring_final_reverse_coeff_high_branch_total_n14}");
+    println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_sign_formula_ambiguous_n14={direct_restoring_final_reverse_coeff_high_branch_sign_formula_ambiguous_n14}");
+    println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_sign_formula_high_n14={direct_restoring_final_reverse_coeff_high_branch_sign_formula_high_n14}");
+    println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mismatches_n14={direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mismatches_n14}");
+    println!("METRIC scratch600_direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mask_n14={direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mask_n14}");
     println!("METRIC scratch600_direct_restoring_final_reverse_coeff_candidates_max_q_bits_n14={direct_restoring_final_reverse_coeff_candidates_max_q_bits_n14}");
     println!("METRIC scratch600_direct_restoring_final_reverse_coeff_candidates_max_coeff_abs_bits_n14={direct_restoring_final_reverse_coeff_candidates_max_coeff_abs_bits_n14}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_adjacent_transitions_n14={direct_restoring_final_low_branch_adjacent_transitions_n14}");
@@ -3332,6 +3341,16 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_reverse_coeff_high_branch_total_n14
                 == direct_restoring_final_reverse_coeff_candidates_high_n14,
         "restoring-final coefficient high-branch selector stopped looking dense"
+    );
+    assert!(
+        direct_restoring_final_reverse_coeff_high_branch_sign_formula_ambiguous_n14
+            == direct_restoring_final_reverse_q_total_steps_n14
+            && direct_restoring_final_reverse_coeff_high_branch_sign_formula_high_n14
+                == direct_restoring_final_reverse_coeff_candidates_high_n14
+            && direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mismatches_n14
+                > 0
+            && direct_restoring_final_reverse_coeff_high_branch_sign_formula_best_mask_n14 > 0,
+        "cheap sign/determinant branch formula now works; promote metadata deletion"
     );
     assert!(
         direct_restoring_final_low_branch_adjacent_transitions_n14
