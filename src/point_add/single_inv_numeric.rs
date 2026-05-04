@@ -28222,6 +28222,483 @@ mod tests {
     }
 
     #[test]
+    fn direct_centered_restoring_final_peakfit_toy_exact_domain_probe() {
+        // The 256-bit peak-fit row is still sample-trained.  Before treating its
+        // 381-bit stream cap as a production guarantee, check the same
+        // train-then-exhaust pattern on toy prime fields where the full domain is
+        // cheap.  Missing symbols here mean the secp route needs a proof or a
+        // charged fallback, not just more sampled confidence.
+        use std::collections::{BTreeMap, BTreeSet};
+
+        #[derive(Clone)]
+        struct ToySchedule {
+            flatten: Vec<bool>,
+            shannon_lens_by_step: Vec<BTreeMap<usize, usize>>,
+            balanced_lens_by_step: Vec<BTreeMap<usize, usize>>,
+            train_p99: usize,
+            train_max: usize,
+            flatten_steps: usize,
+        }
+
+        struct ToyEval {
+            p99: usize,
+            max: usize,
+            missing_symbols: usize,
+            missing_traces: usize,
+            over_budget_traces: usize,
+        }
+
+        let bit_len_u128 = |x: u128| -> usize {
+            if x == 0 { 0 } else { 128 - x.leading_zeros() as usize }
+        };
+        let alignment_trace = |p: u16, x: u16| -> Vec<usize> {
+            let mut u = p as i128;
+            let mut v = x as i128;
+            let mut coeff_u = 0i128;
+            let mut coeff_v = 1i128;
+            let mut alignments = Vec::new();
+            while v != 0 {
+                let abs_u = u.unsigned_abs();
+                let abs_v = v.unsigned_abs();
+                let adjusted = abs_u + (abs_v >> 1usize);
+                let q_abs = (adjusted / abs_v) as i128;
+                let q_signed = if (u < 0) ^ (v < 0) { -q_abs } else { q_abs };
+                let next_v = u - q_signed * v;
+                let next_coeff_v = coeff_u - q_signed * coeff_v;
+
+                let denom = coeff_v.unsigned_abs();
+                assert!(denom > 0, "toy restoring-final denominator vanished");
+                let low_numer = if coeff_u == 0 {
+                    next_coeff_v.unsigned_abs()
+                } else {
+                    next_coeff_v
+                        .unsigned_abs()
+                        .checked_sub(1)
+                        .expect("toy restoring-final low numerator underflow")
+                };
+                let alignment = bit_len_u128(low_numer).saturating_sub(bit_len_u128(denom));
+                alignments.push(alignment);
+
+                u = v;
+                v = next_v;
+                coeff_u = coeff_v;
+                coeff_v = next_coeff_v;
+            }
+            alignments
+        };
+        let mean_usize = |rows: &[usize]| -> f64 {
+            rows.iter().map(|&v| v as f64).sum::<f64>() / rows.len() as f64
+        };
+        let p99_usize = |rows: &mut Vec<usize>| -> usize {
+            rows.sort_unstable();
+            rows[rows.len() * 99 / 100]
+        };
+        let max_usize = |rows: &[usize]| -> usize {
+            rows.iter().copied().max().unwrap_or(0)
+        };
+        let over_budget_mass = |rows: &[usize], budget: usize| -> usize {
+            rows.iter().map(|&bits| bits.saturating_sub(budget)).sum()
+        };
+        let prefix_len = |freq: usize, total: usize| -> usize {
+            assert!(freq > 0 && total > 0, "toy code length saw empty symbol");
+            if freq == total {
+                0
+            } else {
+                ((total as f64).log2() - (freq as f64).log2())
+                    .ceil()
+                    .max(1.0) as usize
+            }
+        };
+        let dynamic_cost = |len_choices: usize, max_len: usize| -> usize {
+            if len_choices > 1 { len_choices * max_len } else { 0 }
+        };
+        let build_schedule = |traces: &[Vec<usize>], max_steps: usize, budget: usize| -> ToySchedule {
+            let mut align_by_step = vec![BTreeMap::<usize, usize>::new(); max_steps];
+            for alignments in traces {
+                for (step, &alignment) in alignments.iter().enumerate() {
+                    *align_by_step[step].entry(alignment).or_insert(0) += 1;
+                }
+            }
+
+            let mut shannon_lens_by_step =
+                Vec::<BTreeMap<usize, usize>>::with_capacity(max_steps);
+            let mut balanced_lens_by_step =
+                Vec::<BTreeMap<usize, usize>>::with_capacity(max_steps);
+            let mut code_len_sets = Vec::<Vec<usize>>::with_capacity(max_steps);
+            let mut max_code_lens = Vec::with_capacity(max_steps);
+            let mut balanced_code_len_sets = Vec::<Vec<usize>>::with_capacity(max_steps);
+            let mut balanced_max_code_lens = Vec::with_capacity(max_steps);
+            for counts in &align_by_step {
+                if counts.is_empty() {
+                    shannon_lens_by_step.push(BTreeMap::new());
+                    balanced_lens_by_step.push(BTreeMap::new());
+                    code_len_sets.push(Vec::new());
+                    max_code_lens.push(0);
+                    balanced_code_len_sets.push(Vec::new());
+                    balanced_max_code_lens.push(0);
+                    continue;
+                }
+                let total = counts.values().sum::<usize>();
+                let mut shannon_lens = BTreeMap::new();
+                for (&symbol, &freq) in counts {
+                    shannon_lens.insert(symbol, prefix_len(freq, total));
+                }
+                let mut lens = shannon_lens.values().copied().collect::<Vec<_>>();
+                lens.sort_unstable();
+                lens.dedup();
+                max_code_lens.push(lens.iter().copied().max().unwrap_or(0));
+                code_len_sets.push(lens);
+                shannon_lens_by_step.push(shannon_lens);
+
+                let support = counts.len();
+                let max_len = if support <= 1 {
+                    0
+                } else {
+                    usize_bit_len_for_payload_test(support - 1)
+                };
+                let short_count = if support <= 1 { 1 } else { (1usize << max_len) - support };
+                let short_len = max_len.saturating_sub(1);
+                let mut symbols_by_freq = counts
+                    .iter()
+                    .map(|(&symbol, &freq)| (symbol, freq))
+                    .collect::<Vec<_>>();
+                symbols_by_freq.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let mut balanced_lens = BTreeMap::new();
+                for (idx, (symbol, _)) in symbols_by_freq.iter().copied().enumerate() {
+                    let len = if support <= 1 {
+                        0
+                    } else if idx < short_count {
+                        short_len
+                    } else {
+                        max_len
+                    };
+                    balanced_lens.insert(symbol, len);
+                }
+                let mut balanced_set = balanced_lens.values().copied().collect::<Vec<_>>();
+                balanced_set.sort_unstable();
+                balanced_set.dedup();
+                balanced_max_code_lens.push(balanced_set.iter().copied().max().unwrap_or(0));
+                balanced_code_len_sets.push(balanced_set);
+                balanced_lens_by_step.push(balanced_lens);
+            }
+
+            let shannon_rows = traces
+                .iter()
+                .map(|alignments| {
+                    alignments
+                        .iter()
+                        .enumerate()
+                        .map(|(step, alignment)| shannon_lens_by_step[step][alignment])
+                        .sum::<usize>()
+                })
+                .collect::<Vec<_>>();
+            let mut pair_active_counts = vec![0usize; max_steps];
+            for alignments in traces {
+                for step in 0..alignments.len().saturating_sub(1) {
+                    pair_active_counts[step] += 1;
+                }
+            }
+            let mut step_bit_delta_rows = Vec::with_capacity(max_steps);
+            let mut candidates = Vec::<(usize, f64, f64)>::new();
+            for step in 0..max_steps {
+                let mut delta_rows = Vec::with_capacity(traces.len());
+                let mut delta_sum = 0isize;
+                for alignments in traces {
+                    let delta = if step < alignments.len() {
+                        let alignment = alignments[step];
+                        balanced_lens_by_step[step]
+                            .get(&alignment)
+                            .copied()
+                            .unwrap_or(0) as isize
+                            - shannon_lens_by_step[step]
+                                .get(&alignment)
+                                .copied()
+                                .unwrap_or(0) as isize
+                    } else {
+                        0
+                    };
+                    delta_sum += delta;
+                    delta_rows.push(delta);
+                }
+                let mut benefit_sum = 0isize;
+                if step % 2 == 0 && step + 1 < max_steps {
+                    let old = dynamic_cost(code_len_sets[step].len(), max_code_lens[step + 1]);
+                    let new = dynamic_cost(
+                        balanced_code_len_sets[step].len(),
+                        max_code_lens[step + 1],
+                    );
+                    benefit_sum +=
+                        ((old as isize) - (new as isize)) * pair_active_counts[step] as isize;
+                }
+                if step > 0 && (step - 1) % 2 == 0 {
+                    let old = dynamic_cost(code_len_sets[step - 1].len(), max_code_lens[step]);
+                    let new = dynamic_cost(
+                        code_len_sets[step - 1].len(),
+                        balanced_max_code_lens[step],
+                    );
+                    benefit_sum +=
+                        ((old as isize) - (new as isize)) * pair_active_counts[step - 1] as isize;
+                }
+                let mean_delta = delta_sum as f64 / traces.len() as f64;
+                let mean_benefit = benefit_sum as f64 / traces.len() as f64;
+                if mean_benefit > 0.0 || mean_delta < 0.0 {
+                    candidates.push((step, mean_benefit, mean_delta));
+                }
+                step_bit_delta_rows.push(delta_rows);
+            }
+            candidates.sort_by(|a, b| {
+                let score = |benefit: f64, delta: f64| {
+                    if delta <= 0.0 { f64::INFINITY } else { benefit / delta }
+                };
+                score(b.1, b.2).partial_cmp(&score(a.1, a.2)).unwrap()
+            });
+
+            let mut flatten = vec![false; max_steps];
+            let mut rows = shannon_rows;
+            for &(step, _, _) in &candidates {
+                let mut trial = rows.clone();
+                for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                    *value = ((*value as isize) + *delta) as usize;
+                }
+                if p99_usize(&mut trial.clone()) <= budget {
+                    flatten[step] = true;
+                    rows = trial;
+                }
+            }
+            let mut current_over_budget = over_budget_mass(&rows, budget);
+            while current_over_budget > 0 {
+                let mut best_step = None;
+                let mut best_over_budget = current_over_budget;
+                let mut best_max_bits = max_usize(&rows);
+                let mut best_lost_benefit = f64::INFINITY;
+                for &(step, benefit, _) in &candidates {
+                    if !flatten[step] {
+                        continue;
+                    }
+                    let mut trial = rows.clone();
+                    for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                        *value = ((*value as isize) - *delta) as usize;
+                    }
+                    let trial_over_budget = over_budget_mass(&trial, budget);
+                    let trial_max_bits = max_usize(&trial);
+                    let better = trial_over_budget < best_over_budget
+                        || (trial_over_budget == best_over_budget
+                            && (trial_max_bits < best_max_bits
+                                || (trial_max_bits == best_max_bits
+                                    && benefit < best_lost_benefit)));
+                    if better {
+                        best_step = Some(step);
+                        best_over_budget = trial_over_budget;
+                        best_max_bits = trial_max_bits;
+                        best_lost_benefit = benefit;
+                    }
+                }
+                let Some(step) = best_step else {
+                    break;
+                };
+                for (value, delta) in rows.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                    *value = ((*value as isize) - *delta) as usize;
+                }
+                flatten[step] = false;
+                current_over_budget = best_over_budget;
+            }
+            for &(step, _, _) in &candidates {
+                if flatten[step] {
+                    continue;
+                }
+                let mut trial = rows.clone();
+                for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                    *value = ((*value as isize) + *delta) as usize;
+                }
+                if max_usize(&trial) <= budget {
+                    flatten[step] = true;
+                    rows = trial;
+                }
+            }
+            let train_max = max_usize(&rows);
+            let train_p99 = p99_usize(&mut rows);
+            let flatten_steps = flatten.iter().filter(|&&selected| selected).count();
+            ToySchedule {
+                flatten,
+                shannon_lens_by_step,
+                balanced_lens_by_step,
+                train_p99,
+                train_max,
+                flatten_steps,
+            }
+        };
+        let eval_schedule =
+            |traces: &[Vec<usize>], schedule: &ToySchedule, budget: usize| -> ToyEval {
+                let mut rows = Vec::with_capacity(traces.len());
+                let mut missing_symbols = 0usize;
+                let mut missing_traces = 0usize;
+                for alignments in traces {
+                    let mut bits = 0usize;
+                    let mut trace_missing = false;
+                    for (step, &alignment) in alignments.iter().enumerate() {
+                        let lens = if schedule.flatten[step] {
+                            &schedule.balanced_lens_by_step[step]
+                        } else {
+                            &schedule.shannon_lens_by_step[step]
+                        };
+                        if let Some(&len) = lens.get(&alignment) {
+                            bits += len;
+                        } else {
+                            missing_symbols += 1;
+                            trace_missing = true;
+                        }
+                    }
+                    missing_traces += trace_missing as usize;
+                    rows.push(bits);
+                }
+                let max = max_usize(&rows);
+                let p99 = p99_usize(&mut rows);
+                let over_budget_traces = rows.iter().filter(|&&bits| bits > budget).count();
+                ToyEval { p99, max, missing_symbols, missing_traces, over_budget_traces }
+            };
+
+        let mut cases_with_sample_gap = 0usize;
+        let mut largest_missing_symbols = 0usize;
+        let mut largest_sample_over_budget = 0usize;
+        let mut largest_exact_over_budget = 0usize;
+        let cases = [
+            (10usize, 1021u16, 128usize),
+            (12usize, 4093u16, 256usize),
+            (14usize, 16381u16, 512usize),
+            (16usize, 65521u16, 1024usize),
+        ];
+        for &(n, p, train_target) in &cases {
+            let domain_traces = (1..p)
+                .map(|x| alignment_trace(p, x))
+                .collect::<Vec<_>>();
+            let max_steps = domain_traces.iter().map(Vec::len).max().unwrap_or(0);
+            let mut train_indices = BTreeSet::new();
+            let mut state = (p as u64) ^ 0xd1ce_c0ef_a119_0301u64;
+            while train_indices.len() < train_target.min(domain_traces.len()) {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+                train_indices.insert((state as usize) % domain_traces.len());
+            }
+            let train_traces = train_indices
+                .iter()
+                .map(|&idx| domain_traces[idx].clone())
+                .collect::<Vec<_>>();
+            let budget = (381usize * n + 255usize) / 256usize;
+            let sample_schedule = build_schedule(&train_traces, max_steps, budget);
+            let sample_train_eval = eval_schedule(&train_traces, &sample_schedule, budget);
+            let sample_domain_eval = eval_schedule(&domain_traces, &sample_schedule, budget);
+            let exact_schedule = build_schedule(&domain_traces, max_steps, budget);
+            let exact_eval = eval_schedule(&domain_traces, &exact_schedule, budget);
+            let sample_gap = sample_domain_eval.missing_symbols > 0
+                || sample_domain_eval.over_budget_traces > 0
+                || sample_domain_eval.max > sample_schedule.train_max;
+            cases_with_sample_gap += sample_gap as usize;
+            largest_missing_symbols =
+                largest_missing_symbols.max(sample_domain_eval.missing_symbols);
+            largest_sample_over_budget =
+                largest_sample_over_budget.max(sample_domain_eval.over_budget_traces);
+            largest_exact_over_budget =
+                largest_exact_over_budget.max(exact_eval.over_budget_traces);
+            println!("METRIC centered_direct_peakfit_toy_n{n}_budget_bits={budget}");
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_train_samples={}",
+                train_traces.len()
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_train_p99={}",
+                sample_train_eval.p99
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_train_max={}",
+                sample_train_eval.max
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_schedule_train_p99={}",
+                sample_schedule.train_p99
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_schedule_train_max={}",
+                sample_schedule.train_max
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_flatten_steps={}",
+                sample_schedule.flatten_steps
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_domain_p99_seenbits={}",
+                sample_domain_eval.p99
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_domain_max_seenbits={}",
+                sample_domain_eval.max
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_domain_missing_symbols={}",
+                sample_domain_eval.missing_symbols
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_domain_missing_traces={}",
+                sample_domain_eval.missing_traces
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_sample_domain_over_budget_traces={}",
+                sample_domain_eval.over_budget_traces
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_exact_domain_p99={}",
+                exact_eval.p99
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_exact_domain_max={}",
+                exact_eval.max
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_exact_domain_over_budget_traces={}",
+                exact_eval.over_budget_traces
+            );
+            println!(
+                "METRIC centered_direct_peakfit_toy_n{n}_exact_flatten_steps={}",
+                exact_schedule.flatten_steps
+            );
+            eprintln!(
+                "Peak-fit toy exact-domain n={n}: budget={budget}, train={}, sample_train={}/{}, sample_domain_seen={}/{}, missing={}/{}, over={}, exact={}/{}, exact_over={}, exact_flat={}, mean_len={:.2}",
+                train_traces.len(),
+                sample_train_eval.p99,
+                sample_train_eval.max,
+                sample_domain_eval.p99,
+                sample_domain_eval.max,
+                sample_domain_eval.missing_symbols,
+                sample_domain_eval.missing_traces,
+                sample_domain_eval.over_budget_traces,
+                exact_eval.p99,
+                exact_eval.max,
+                exact_eval.over_budget_traces,
+                exact_schedule.flatten_steps,
+                mean_usize(&domain_traces.iter().map(Vec::len).collect::<Vec<_>>())
+            );
+        }
+        println!(
+            "METRIC centered_direct_peakfit_toy_cases_with_sample_gap={cases_with_sample_gap}"
+        );
+        println!(
+            "METRIC centered_direct_peakfit_toy_largest_missing_symbols={largest_missing_symbols}"
+        );
+        println!(
+            "METRIC centered_direct_peakfit_toy_largest_sample_over_budget_traces={largest_sample_over_budget}"
+        );
+        println!(
+            "METRIC centered_direct_peakfit_toy_largest_exact_over_budget_traces={largest_exact_over_budget}"
+        );
+        assert!(
+            cases_with_sample_gap > 0 && largest_missing_symbols > 0,
+            "sample-trained peak-fit schedules generalized exactly on toy domains; revisit the secp non-sampled blocker"
+        );
+        assert!(
+            largest_exact_over_budget > 0,
+            "exact-support toy peak-fit schedules fit the strict scaled bit budget; revisit the secp proof path"
+        );
+    }
+
+    #[test]
     fn direct_centered_restoring_final_block_joint_rank_bits_are_dense() {
         // The mixed 4..8 block-joint binary-depth floor only helps if the block
         // pattern rank can be decoded phase-cleanly.  Treat the exact toy
