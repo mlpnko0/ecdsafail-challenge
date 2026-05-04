@@ -4552,6 +4552,8 @@ mod tests {
             exact_tail_logbarrel: Vec<isize>,
             noscan_tail_logbarrel: Vec<isize>,
             exact_prefix_bounded_tail_logbarrel: Vec<isize>,
+            exact_prefix_bounded_tail_logbarrel_plus_one_width: Vec<isize>,
+            exact_prefix_bounded_tail_logbarrel_plus_two_width: Vec<isize>,
             prefix_steps: Vec<usize>,
             prefix_extract_width_sum: Vec<usize>,
             prefix_max_digits: Vec<usize>,
@@ -4598,6 +4600,10 @@ mod tests {
                 exact_tail_logbarrel: Vec::with_capacity(samples),
                 noscan_tail_logbarrel: Vec::with_capacity(samples),
                 exact_prefix_bounded_tail_logbarrel: Vec::with_capacity(samples),
+                exact_prefix_bounded_tail_logbarrel_plus_one_width:
+                    Vec::with_capacity(samples),
+                exact_prefix_bounded_tail_logbarrel_plus_two_width:
+                    Vec::with_capacity(samples),
                 prefix_steps: Vec::with_capacity(samples),
                 prefix_extract_width_sum: Vec::with_capacity(samples),
                 prefix_max_digits: Vec::with_capacity(samples),
@@ -4856,6 +4862,8 @@ mod tests {
         let mut exact_tail_logbarrel_fitting_rows = 0usize;
         let mut noscan_tail_logbarrel_fitting_rows = 0usize;
         let mut exact_prefix_bounded_tail_logbarrel_fitting_rows = 0usize;
+        let mut exact_prefix_bounded_tail_logbarrel_plus_one_fitting_rows = 0usize;
+        let mut exact_prefix_bounded_tail_logbarrel_plus_two_fitting_rows = 0usize;
         for row in &mut rows {
             let bounded_tail_barrel_bits = usize_bit_len_for_payload_test(
                 row.tail_max_q_bits
@@ -4898,9 +4906,15 @@ mod tests {
                     * (exact_barrel_bits - bounded_prefix_barrel_bits);
                 let decoder_saved =
                     row.decoder_width_sum[i] * (exact_barrel_bits - bounded_decoder_barrel_bits);
-                row.exact_prefix_bounded_tail_logbarrel.push(
-                    row.exact_tail_logbarrel[i] - 4 * (prefix_saved + decoder_saved) as isize,
-                );
+                let prefix_bounded =
+                    row.exact_tail_logbarrel[i] - 4 * (prefix_saved + decoder_saved) as isize;
+                let prefix_decoder_width_tax =
+                    4isize * (row.prefix_extract_width_sum[i] + row.decoder_width_sum[i]) as isize;
+                row.exact_prefix_bounded_tail_logbarrel.push(prefix_bounded);
+                row.exact_prefix_bounded_tail_logbarrel_plus_one_width
+                    .push(prefix_bounded + prefix_decoder_width_tax);
+                row.exact_prefix_bounded_tail_logbarrel_plus_two_width
+                    .push(prefix_bounded + 2 * prefix_decoder_width_tax);
             }
             let base_mean = mean(&row.base);
             let exact_mean = mean(&row.exact);
@@ -4917,6 +4931,10 @@ mod tests {
             let noscan_tail_logbarrel_mean = mean(&row.noscan_tail_logbarrel);
             let exact_prefix_bounded_tail_logbarrel_mean =
                 mean(&row.exact_prefix_bounded_tail_logbarrel);
+            let exact_prefix_bounded_tail_logbarrel_plus_one_mean =
+                mean(&row.exact_prefix_bounded_tail_logbarrel_plus_one_width);
+            let exact_prefix_bounded_tail_logbarrel_plus_two_mean =
+                mean(&row.exact_prefix_bounded_tail_logbarrel_plus_two_width);
             let base_first64 = row.first64_base as f64 / 64.0;
             let exact_first64 = row.first64_exact as f64 / 64.0;
             let noscan_first64 = row.first64_noscan as f64 / 64.0;
@@ -4954,6 +4972,10 @@ mod tests {
             let noscan_tail_logbarrel_p99 = p99_isize(&mut row.noscan_tail_logbarrel);
             let exact_prefix_bounded_tail_logbarrel_p99 =
                 p99_isize(&mut row.exact_prefix_bounded_tail_logbarrel);
+            let exact_prefix_bounded_tail_logbarrel_plus_one_p99 =
+                p99_isize(&mut row.exact_prefix_bounded_tail_logbarrel_plus_one_width);
+            let exact_prefix_bounded_tail_logbarrel_plus_two_p99 =
+                p99_isize(&mut row.exact_prefix_bounded_tail_logbarrel_plus_two_width);
             if scratch_p99 <= GOOGLE_LOW_QUBIT_SCRATCH && exact_mean < best_exact_mean {
                 best_exact_mean = exact_mean;
                 best_exact_depth = row.depth;
@@ -4997,6 +5019,14 @@ mod tests {
             exact_prefix_bounded_tail_logbarrel_fitting_rows +=
                 (scratch_p99 <= GOOGLE_LOW_QUBIT_SCRATCH
                     && exact_prefix_bounded_tail_logbarrel_mean < TARGET)
+                    as usize;
+            exact_prefix_bounded_tail_logbarrel_plus_one_fitting_rows +=
+                (scratch_p99 <= GOOGLE_LOW_QUBIT_SCRATCH
+                    && exact_prefix_bounded_tail_logbarrel_plus_one_mean < TARGET)
+                    as usize;
+            exact_prefix_bounded_tail_logbarrel_plus_two_fitting_rows +=
+                (scratch_p99 <= GOOGLE_LOW_QUBIT_SCRATCH
+                    && exact_prefix_bounded_tail_logbarrel_plus_two_mean < TARGET)
                     as usize;
             println!(
                 "METRIC halfgcd_second_col_fixed_depth_d{}_scratch_p99={scratch_p99}",
@@ -5183,6 +5213,22 @@ mod tests {
                 row.depth
             );
             println!(
+                "METRIC halfgcd_second_col_fixed_depth_d{}_exact_prefix_bounded_tail_logbarrel_plus_one_width_mean={exact_prefix_bounded_tail_logbarrel_plus_one_mean:.3}",
+                row.depth
+            );
+            println!(
+                "METRIC halfgcd_second_col_fixed_depth_d{}_exact_prefix_bounded_tail_logbarrel_plus_one_width_p99={exact_prefix_bounded_tail_logbarrel_plus_one_p99}",
+                row.depth
+            );
+            println!(
+                "METRIC halfgcd_second_col_fixed_depth_d{}_exact_prefix_bounded_tail_logbarrel_plus_two_width_mean={exact_prefix_bounded_tail_logbarrel_plus_two_mean:.3}",
+                row.depth
+            );
+            println!(
+                "METRIC halfgcd_second_col_fixed_depth_d{}_exact_prefix_bounded_tail_logbarrel_plus_two_width_p99={exact_prefix_bounded_tail_logbarrel_plus_two_p99}",
+                row.depth
+            );
+            println!(
                 "METRIC halfgcd_second_col_fixed_depth_d{}_early_gcd_samples={}",
                 row.depth, row.early_gcd_samples
             );
@@ -5220,6 +5266,12 @@ mod tests {
         println!(
             "METRIC halfgcd_second_col_fixed_depth_exact_prefix_bounded_tail_logbarrel_fitting_rows={exact_prefix_bounded_tail_logbarrel_fitting_rows}"
         );
+        println!(
+            "METRIC halfgcd_second_col_fixed_depth_exact_prefix_bounded_tail_logbarrel_plus_one_width_fitting_rows={exact_prefix_bounded_tail_logbarrel_plus_one_fitting_rows}"
+        );
+        println!(
+            "METRIC halfgcd_second_col_fixed_depth_exact_prefix_bounded_tail_logbarrel_plus_two_width_fitting_rows={exact_prefix_bounded_tail_logbarrel_plus_two_fitting_rows}"
+        );
         println!("METRIC halfgcd_second_col_fixed_depth_best_exact_depth={best_exact_depth}");
         println!(
             "METRIC halfgcd_second_col_fixed_depth_best_exact_mean={best_exact_mean:.3}"
@@ -5253,6 +5305,14 @@ mod tests {
         assert!(
             exact_prefix_bounded_tail_logbarrel_fitting_rows > 0,
             "bounded prefix/decoder alignment no longer repairs the generic tail logbarrel average"
+        );
+        assert!(
+            exact_prefix_bounded_tail_logbarrel_plus_one_fitting_rows > 0,
+            "bounded prefix/decoder alignment cannot afford even one global fallback width pass"
+        );
+        assert!(
+            exact_prefix_bounded_tail_logbarrel_plus_two_fitting_rows > 0,
+            "bounded prefix/decoder alignment cannot afford two global fallback width passes"
         );
         assert_eq!(
             exact_tail_bounded_plus_two_fitting_rows, 0,
@@ -5419,6 +5479,191 @@ mod tests {
         assert!(
             full_domain_avg_gap_floor > 0,
             "globally paying the adversarial tail layers might still fit the sampled average gap"
+        );
+    }
+
+    #[test]
+    fn half_gcd_second_column_fixed_depth_prefix_bounded_alignment_needs_fallback() {
+        // The sampled fixed-depth ledger also saw prefix and coefficient-decoder
+        // quotients that fit a 5-bit alignment barrel.  Small field elements
+        // force 256-bit Euclid quotients before the depth-64 prefix would
+        // normally finish, so the bounded route needs an exact rare-branch
+        // fallback rather than a global 8-bit alignment charge.
+        const DEPTH: usize = 64;
+        const SAMPLED_BARREL_BITS: usize = 5;
+        const SAMPLED_AVG_GAP_TO_2700K: isize = -199_818;
+        const PREFIX_DECODER_WIDTH_SUM_MEAN_FLOOR: isize = 20_057;
+
+        fn fixed_depth_prefix_alignment_stats(
+            x: U256,
+            p: U256,
+            depth: usize,
+        ) -> (usize, usize, usize, usize, usize) {
+            let mut u = p;
+            let mut v = x;
+            let mut b = smag_for_halfgcd_test(false, U512::ZERO);
+            let mut d = smag_for_halfgcd_test(false, U512::from(1u64));
+            let mut prefix_steps = 0usize;
+            let mut prefix_max_digits = 0usize;
+            let mut decoder_max_digits = 0usize;
+            let mut prefix_extract_width_sum = 0usize;
+            let mut decoder_width_sum = 0usize;
+
+            while prefix_steps < depth && !v.is_zero() {
+                let q = u / v;
+                let (digits, prefinal_rem, prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(
+                        u512_from_u256_for_halfgcd_test(u),
+                        u512_from_u256_for_halfgcd_test(v),
+                    );
+                prefix_max_digits = prefix_max_digits.max(digits.len());
+                let final_negative = prefinal_rem.neg && !prefinal_rem.mag.is_zero();
+                let floor_q = if final_negative {
+                    prefinal_q - U512::from(1u64)
+                } else {
+                    prefinal_q
+                };
+                assert_eq!(floor_q, u512_from_u256_for_halfgcd_test(q));
+                let width = u256_bit_len(u).max(u256_bit_len(v)).max(1);
+                let coeff_width = u512_bit_len_for_halfgcd_test(b.mag)
+                    .max(u512_bit_len_for_halfgcd_test(d.mag))
+                    .max(1)
+                    + 1;
+                prefix_extract_width_sum += width + coeff_width;
+
+                let rem = u - q * v;
+                let nb = d;
+                let nd = signed_sub_scaled_for_halfgcd_test(b, q, d);
+                let numer = if b.mag.is_zero() {
+                    nd.mag
+                } else {
+                    nd.mag - U512::from(1u64)
+                };
+                let denom = nb.mag;
+                assert!(!denom.is_zero(), "prefix decoder denominator vanished");
+                assert_eq!(
+                    numer / denom,
+                    u512_from_u256_for_halfgcd_test(q),
+                    "prefix decoder reverse quotient formula mismatch"
+                );
+                let (decoder_digits, decoder_prefinal_rem, decoder_prefinal_q) =
+                    nonrestoring_prefinal_signed_digits_for_centered_test(numer, denom);
+                decoder_max_digits = decoder_max_digits.max(decoder_digits.len());
+                let decoder_final_negative =
+                    decoder_prefinal_rem.neg && !decoder_prefinal_rem.mag.is_zero();
+                let decoder_floor_q = if decoder_final_negative {
+                    decoder_prefinal_q - U512::from(1u64)
+                } else {
+                    decoder_prefinal_q
+                };
+                assert_eq!(decoder_floor_q, u512_from_u256_for_halfgcd_test(q));
+                decoder_width_sum += u512_bit_len_for_halfgcd_test(numer)
+                    .max(u512_bit_len_for_halfgcd_test(denom))
+                    .max(1);
+
+                u = v;
+                v = rem;
+                b = nb;
+                d = nd;
+                prefix_steps += 1;
+            }
+
+            (
+                prefix_steps,
+                prefix_max_digits,
+                decoder_max_digits,
+                prefix_extract_width_sum,
+                decoder_width_sum,
+            )
+        }
+
+        let p = SECP256K1_P;
+        let mut best_x = U256::ZERO;
+        let mut best_prefix_steps = 0usize;
+        let mut best_prefix_max_digits = 0usize;
+        let mut best_decoder_max_digits = 0usize;
+        let mut best_prefix_extract_width_sum = 0usize;
+        let mut best_decoder_width_sum = 0usize;
+
+        for x_u64 in 1u64..=512u64 {
+            for x in [U256::from(x_u64), p - U256::from(x_u64)] {
+                let (
+                    prefix_steps,
+                    prefix_max_digits,
+                    decoder_max_digits,
+                    prefix_extract_width_sum,
+                    decoder_width_sum,
+                ) = fixed_depth_prefix_alignment_stats(x, p, DEPTH);
+                let required_digits = prefix_max_digits.max(decoder_max_digits);
+                let width_sum = prefix_extract_width_sum + decoder_width_sum;
+                let best_required_digits =
+                    best_prefix_max_digits.max(best_decoder_max_digits);
+                let best_width_sum =
+                    best_prefix_extract_width_sum + best_decoder_width_sum;
+                if required_digits > best_required_digits
+                    || (required_digits == best_required_digits && width_sum > best_width_sum)
+                {
+                    best_x = x;
+                    best_prefix_steps = prefix_steps;
+                    best_prefix_max_digits = prefix_max_digits;
+                    best_decoder_max_digits = decoder_max_digits;
+                    best_prefix_extract_width_sum = prefix_extract_width_sum;
+                    best_decoder_width_sum = decoder_width_sum;
+                }
+            }
+        }
+
+        let required_digits = best_prefix_max_digits.max(best_decoder_max_digits);
+        let exact_required_bits =
+            usize_bit_len_for_payload_test(required_digits.saturating_sub(1));
+        let missing_layers = exact_required_bits.saturating_sub(SAMPLED_BARREL_BITS);
+        let candidate_missing_pointadd_tax = 4usize
+            * (best_prefix_extract_width_sum + best_decoder_width_sum)
+            * missing_layers;
+        let global_avg_missing_tax_floor =
+            4isize * PREFIX_DECODER_WIDTH_SUM_MEAN_FLOOR * missing_layers as isize;
+        let full_domain_avg_gap_floor =
+            SAMPLED_AVG_GAP_TO_2700K + global_avg_missing_tax_floor;
+
+        println!("METRIC halfgcd_fixed_depth64_prefix_adversarial_x={best_x}");
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_prefix_steps={best_prefix_steps}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_prefix_max_digits={best_prefix_max_digits}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_decoder_max_digits={best_decoder_max_digits}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_required_barrel_bits={exact_required_bits}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_missing_layers={missing_layers}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_prefix_extract_width_sum={best_prefix_extract_width_sum}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_decoder_width_sum={best_decoder_width_sum}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_adversarial_missing_pointadd_tax={candidate_missing_pointadd_tax}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_prefix_full_domain_avg_gap_floor={full_domain_avg_gap_floor}"
+        );
+        eprintln!(
+            "half-GCD fixed-depth64 adversarial prefix: x={best_x}, prefix_steps={best_prefix_steps}, prefix_digits={best_prefix_max_digits}, decoder_digits={best_decoder_max_digits}, required_bits={exact_required_bits}, missing_layers={missing_layers}, candidate_tax={candidate_missing_pointadd_tax}, full_domain_avg_gap_floor={full_domain_avg_gap_floor}"
+        );
+
+        assert!(
+            required_digits > 32,
+            "sampled 5-bit prefix/decoder barrels unexpectedly cover small-field adversarial inputs"
+        );
+        assert!(
+            full_domain_avg_gap_floor > 0,
+            "globally paying adversarial prefix/decoder layers might still fit the sampled average gap"
         );
     }
 
