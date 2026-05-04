@@ -21023,6 +21023,10 @@ mod tests {
         let mut block7: Option<(f64, usize, usize, usize, usize, f64)> = None;
         let mut block32: Option<(f64, usize, usize, usize, usize, f64)> = None;
         let mut best_cond_branch: Option<(usize, f64, usize, usize, usize, usize, f64)> = None;
+        let mut cond_block4: Option<(f64, usize, usize, usize, usize, f64)> = None;
+        let mut cond_block5: Option<(f64, usize, usize, usize, usize, f64)> = None;
+        let mut cond_block6: Option<(f64, usize, usize, usize, usize, f64)> = None;
+        let mut cond_block7: Option<(f64, usize, usize, usize, usize, f64)> = None;
         for &block_symbols in &[2usize, 3, 4, 5, 6, 7, 8, 12, 16, 24, 32, 48, 64, 96, 128] {
             let mut compressed_bits_rows = Vec::with_capacity(samples);
             let mut live_scratch_rows = Vec::with_capacity(samples);
@@ -21096,6 +21100,46 @@ mod tests {
                 p99_usize(&mut cond_branch_live_scratch_rows);
             let cond_branch_augmented_gap =
                 STORED_BRANCH_MEAN + 4.0 * cond_branch_touch_mean - TARGET;
+            if block_symbols == 4 {
+                cond_block4 = Some((
+                    cond_branch_touch_mean,
+                    cond_branch_touch_p99,
+                    cond_branch_compressed_p99,
+                    cond_branch_scratch_p99,
+                    symbol_count_p99,
+                    cond_branch_augmented_gap,
+                ));
+            }
+            if block_symbols == 5 {
+                cond_block5 = Some((
+                    cond_branch_touch_mean,
+                    cond_branch_touch_p99,
+                    cond_branch_compressed_p99,
+                    cond_branch_scratch_p99,
+                    symbol_count_p99,
+                    cond_branch_augmented_gap,
+                ));
+            }
+            if block_symbols == 6 {
+                cond_block6 = Some((
+                    cond_branch_touch_mean,
+                    cond_branch_touch_p99,
+                    cond_branch_compressed_p99,
+                    cond_branch_scratch_p99,
+                    symbol_count_p99,
+                    cond_branch_augmented_gap,
+                ));
+            }
+            if block_symbols == 7 {
+                cond_block7 = Some((
+                    cond_branch_touch_mean,
+                    cond_branch_touch_p99,
+                    cond_branch_compressed_p99,
+                    cond_branch_scratch_p99,
+                    symbol_count_p99,
+                    cond_branch_augmented_gap,
+                ));
+            }
             if block_symbols == 32 {
                 block32 = Some((
                     touch_mean,
@@ -21251,6 +21295,38 @@ mod tests {
             best_cond_branch_symbol_count_p99,
             best_cond_branch_augmented_gap,
         ) = best_cond_branch.unwrap();
+        let (
+            cond_block4_touch_mean,
+            cond_block4_touch_p99,
+            cond_block4_compressed_p99,
+            cond_block4_scratch_p99,
+            cond_block4_symbol_count_p99,
+            cond_block4_augmented_gap,
+        ) = cond_block4.unwrap();
+        let (
+            cond_block5_touch_mean,
+            cond_block5_touch_p99,
+            cond_block5_compressed_p99,
+            cond_block5_scratch_p99,
+            cond_block5_symbol_count_p99,
+            cond_block5_augmented_gap,
+        ) = cond_block5.unwrap();
+        let (
+            cond_block6_touch_mean,
+            cond_block6_touch_p99,
+            cond_block6_compressed_p99,
+            cond_block6_scratch_p99,
+            cond_block6_symbol_count_p99,
+            cond_block6_augmented_gap,
+        ) = cond_block6.unwrap();
+        let (
+            cond_block7_touch_mean,
+            cond_block7_touch_p99,
+            cond_block7_compressed_p99,
+            cond_block7_scratch_p99,
+            cond_block7_symbol_count_p99,
+            cond_block7_augmented_gap,
+        ) = cond_block7.unwrap();
         let block_qrom_row_floor = |block_symbols: usize| -> (usize, usize, usize) {
             let mut block_patterns = Vec::<BTreeSet<Vec<(usize, usize)>>>::new();
             let mut block_counts = Vec::with_capacity(samples);
@@ -21382,6 +21458,30 @@ mod tests {
             STORED_BRANCH_MEAN + 4.0 * block7_with_binary_lookup_2x_mean - TARGET;
         let block7_lookup_multiplier_budget =
             (oneway_parser_budget - block7_touch_mean) / binary_lookup_floor_mean;
+        let cond_block4_with_binary_lookup_2x_mean =
+            cond_block4_touch_mean + 2.0 * cond_branch_binary_lookup_floor_mean;
+        let cond_block4_with_binary_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * cond_block4_with_binary_lookup_2x_mean - TARGET;
+        let cond_block4_lookup_multiplier_budget =
+            (oneway_parser_budget - cond_block4_touch_mean) / cond_branch_binary_lookup_floor_mean;
+        let cond_block5_with_binary_lookup_2x_mean =
+            cond_block5_touch_mean + 2.0 * cond_branch_binary_lookup_floor_mean;
+        let cond_block5_with_binary_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * cond_block5_with_binary_lookup_2x_mean - TARGET;
+        let cond_block5_lookup_multiplier_budget =
+            (oneway_parser_budget - cond_block5_touch_mean) / cond_branch_binary_lookup_floor_mean;
+        let cond_block6_with_binary_lookup_2x_mean =
+            cond_block6_touch_mean + 2.0 * cond_branch_binary_lookup_floor_mean;
+        let cond_block6_with_binary_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * cond_block6_with_binary_lookup_2x_mean - TARGET;
+        let cond_block6_lookup_multiplier_budget =
+            (oneway_parser_budget - cond_block6_touch_mean) / cond_branch_binary_lookup_floor_mean;
+        let cond_block7_with_binary_lookup_2x_mean =
+            cond_block7_touch_mean + 2.0 * cond_branch_binary_lookup_floor_mean;
+        let cond_block7_with_binary_lookup_2x_gap =
+            STORED_BRANCH_MEAN + 4.0 * cond_block7_with_binary_lookup_2x_mean - TARGET;
+        let cond_block7_lookup_multiplier_budget =
+            (oneway_parser_budget - cond_block7_touch_mean) / cond_branch_binary_lookup_floor_mean;
         let best_with_binary_lookup_gap =
             STORED_BRANCH_MEAN + 4.0 * best_with_binary_lookup_mean - TARGET;
         let best_with_binary_lookup_2x_gap =
@@ -21440,6 +21540,30 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_live_scratch_p99={best_cond_branch_scratch_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_symbol_count_p99={best_cond_branch_symbol_count_p99}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_augmented_gap_to_2700k={best_cond_branch_augmented_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_touch_floor_mean={cond_block4_touch_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_touch_floor_p99={cond_block4_touch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_compressed_bits_p99={cond_block4_compressed_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_live_scratch_p99={cond_block4_scratch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_symbol_count_p99={cond_block4_symbol_count_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_augmented_gap_to_2700k={cond_block4_augmented_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_touch_floor_mean={cond_block5_touch_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_touch_floor_p99={cond_block5_touch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_compressed_bits_p99={cond_block5_compressed_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_live_scratch_p99={cond_block5_scratch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_symbol_count_p99={cond_block5_symbol_count_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_augmented_gap_to_2700k={cond_block5_augmented_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_touch_floor_mean={cond_block6_touch_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_touch_floor_p99={cond_block6_touch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_compressed_bits_p99={cond_block6_compressed_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_live_scratch_p99={cond_block6_scratch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_symbol_count_p99={cond_block6_symbol_count_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_augmented_gap_to_2700k={cond_block6_augmented_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_touch_floor_mean={cond_block7_touch_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_touch_floor_p99={cond_block7_touch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_compressed_bits_p99={cond_block7_compressed_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_live_scratch_p99={cond_block7_scratch_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_symbol_count_p99={cond_block7_symbol_count_p99}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_augmented_gap_to_2700k={cond_block7_augmented_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_qrom_row_floor={best_qrom_row_floor}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_qrom_max_rows_in_block={best_qrom_max_rows_in_block}");
         println!("METRIC centered_direct_restoring_final_block_parser_best_qrom_block_count_p99={best_qrom_block_count_p99}");
@@ -21472,11 +21596,23 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_gap_to_2700k={best_cond_branch_with_binary_lookup_gap:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_2x_mean={best_cond_branch_with_binary_lookup_2x_mean:.3}");
         println!("METRIC centered_direct_restoring_final_block_parser_cond_branch_best_with_binary_lookup_2x_gap_to_2700k={best_cond_branch_with_binary_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_with_binary_lookup_2x_mean={cond_block4_with_binary_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_with_binary_lookup_2x_gap_to_2700k={cond_block4_with_binary_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block4_lookup_multiplier_budget={cond_block4_lookup_multiplier_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_with_binary_lookup_2x_mean={cond_block5_with_binary_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_with_binary_lookup_2x_gap_to_2700k={cond_block5_with_binary_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block5_lookup_multiplier_budget={cond_block5_lookup_multiplier_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_with_binary_lookup_2x_mean={cond_block6_with_binary_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_with_binary_lookup_2x_gap_to_2700k={cond_block6_with_binary_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block6_lookup_multiplier_budget={cond_block6_lookup_multiplier_budget:.6}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_with_binary_lookup_2x_mean={cond_block7_with_binary_lookup_2x_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_with_binary_lookup_2x_gap_to_2700k={cond_block7_with_binary_lookup_2x_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_cond_block7_lookup_multiplier_budget={cond_block7_lookup_multiplier_budget:.6}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_noncontig_steps={align_support_noncontig_steps}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_offset_steps={align_support_offset_steps}");
         println!("METRIC centered_direct_restoring_final_block_parser_align_support_max_span={align_support_max_span}");
         eprintln!(
-            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
+            "Direct-centered restoring-final block parser floor: best_block={best_block}, touch_mean={best_touch_mean:.1}, cond_branch_block={best_cond_branch_block}, cond_touch={best_cond_branch_touch_mean:.1}, cond_scratch={best_cond_branch_scratch_p99}, cond_binary2x_gap={best_cond_branch_with_binary_lookup_2x_gap:.1}, qrom_rows={best_qrom_row_floor}, lookup_mean={lookup_scan_floor_mean:.1}, binary_lookup={binary_lookup_floor_mean:.1}, binary2x_gap={best_with_binary_lookup_2x_gap:.1}, noncontig_steps={align_support_noncontig_steps}, touch_plus_lookup={best_with_lookup_mean:.1}, scratch_p99={best_scratch_p99}, compressed_p99={best_compressed_p99}, augmented_gap={best_augmented_gap:.1}, qrom_gap={best_qrom_gap:.1}, lookup_gap={best_with_lookup_gap:.1}, block4_touch={block4_touch_mean:.1}, block4_scratch={block4_scratch_p99}, block4_binary2x_gap={block4_with_binary_lookup_2x_gap:.1}, block4_lookup_multiplier_budget={block4_lookup_multiplier_budget:.3}, cond_block4_scratch={cond_block4_scratch_p99}, cond_block4_binary2x_gap={cond_block4_with_binary_lookup_2x_gap:.1}, block5_touch={block5_touch_mean:.1}, block5_scratch={block5_scratch_p99}, block5_binary2x_gap={block5_with_binary_lookup_2x_gap:.1}, cond_block5_scratch={cond_block5_scratch_p99}, cond_block5_binary2x_gap={cond_block5_with_binary_lookup_2x_gap:.1}, block6_touch={block6_touch_mean:.1}, block6_scratch={block6_scratch_p99}, cond_block6_scratch={cond_block6_scratch_p99}, cond_block6_binary2x_gap={cond_block6_with_binary_lookup_2x_gap:.1}, block7_touch={block7_touch_mean:.1}, block7_scratch={block7_scratch_p99}, block7_binary2x_gap={block7_with_binary_lookup_2x_gap:.1}, block32_touch={block32_touch_mean:.1}, block32_qrom_rows={block32_qrom_row_floor}, block32_scratch={block32_scratch_p99}"
         );
         assert!(
             best_scratch_p99 <= GOOGLE_SCRATCH,
