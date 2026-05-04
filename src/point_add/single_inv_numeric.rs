@@ -4458,6 +4458,241 @@ mod tests {
         )
     }
 
+    fn halfgcd_signed_two_coeff_apply_block_active_trace_for_test(
+        x0: SignedMagU512ForHalfGcdTest,
+        x1: SignedMagU512ForHalfGcdTest,
+        block: usize,
+    ) -> (usize, usize, usize, usize, usize, usize, Vec<u128>) {
+        const MOD_ADD_FAST_CCX: usize = 1024;
+        const MOD_DOUBLE_FAST_CCX: usize = 255;
+        const MOD_HALVE_FAST_CCX: usize = 255;
+        const FIELD_BITS: usize = 256;
+        const STATES: usize = 18;
+        assert!((1..=32).contains(&block), "unexpected trace block size");
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        struct Cost {
+            cost: usize,
+            app: usize,
+            compact_source: usize,
+            block_active_source: usize,
+            active_blocks: usize,
+            occupied: usize,
+            digits: usize,
+        }
+
+        fn better(candidate: Cost, old: Option<Cost>) -> Option<Cost> {
+            match old {
+                Some(row)
+                    if (row.cost, row.digits, row.occupied, row.active_blocks)
+                        <= (
+                            candidate.cost,
+                            candidate.digits,
+                            candidate.occupied,
+                            candidate.active_blocks,
+                        ) =>
+                {
+                    Some(row)
+                }
+                _ => Some(candidate),
+            }
+        }
+
+        fn add_cost(a: Cost, b: Cost) -> Cost {
+            Cost {
+                cost: a.cost + b.cost,
+                app: a.app + b.app,
+                compact_source: a.compact_source + b.compact_source,
+                block_active_source: a.block_active_source + b.block_active_source,
+                active_blocks: a.active_blocks + b.active_blocks,
+                occupied: a.occupied + b.occupied,
+                digits: a.digits + b.digits,
+            }
+        }
+
+        let state_idx = |c0i: usize, c1i: usize, seen: usize| -> usize {
+            ((c0i * 3) + c1i) * 2 + seen
+        };
+        let top0 = u512_bit_len_for_halfgcd_test(x0.mag).saturating_sub(1);
+        let top1 = u512_bit_len_for_halfgcd_test(x1.mag).saturating_sub(1);
+        let top = top0.max(top1);
+        let max_bits = u512_bit_len_for_halfgcd_test(x0.mag)
+            .max(u512_bit_len_for_halfgcd_test(x1.mag))
+            .max(1);
+        let total_bits = max_bits + 3;
+        let bit_at = |x: U512, bit: usize| -> i8 {
+            if bit >= 512 {
+                0
+            } else {
+                ((x >> bit).as_limbs()[0] & 1) as i8
+            }
+        };
+        let zero = Cost {
+            cost: 0,
+            app: 0,
+            compact_source: 0,
+            block_active_source: 0,
+            active_blocks: 0,
+            occupied: 0,
+            digits: 0,
+        };
+        let mut dp = vec![[None::<Cost>; STATES]; total_bits + 1];
+        dp[total_bits][state_idx(1, 1, 0)] = Some(zero);
+        dp[total_bits][state_idx(1, 1, 1)] = Some(zero);
+
+        for bit in (0..total_bits).rev() {
+            let b0 = bit_at(x0.mag, bit);
+            let b1 = bit_at(x1.mag, bit);
+            for c0i in 0..3 {
+                for c1i in 0..3 {
+                    for seen_idx in 0..2 {
+                        let seen = if bit % block == 0 { false } else { seen_idx != 0 };
+                        let c0 = c0i as i8 - 1;
+                        let c1 = c1i as i8 - 1;
+                        let mut best = None::<Cost>;
+                        for d0 in -1i8..=1 {
+                            let s0 = b0 + c0 - d0;
+                            if s0.rem_euclid(2) != 0 {
+                                continue;
+                            }
+                            let nc0 = s0 / 2;
+                            if !(-1..=1).contains(&nc0) {
+                                continue;
+                            }
+                            for d1 in -1i8..=1 {
+                                let s1 = b1 + c1 - d1;
+                                if s1.rem_euclid(2) != 0 {
+                                    continue;
+                                }
+                                let nc1 = s1 / 2;
+                                if !(-1..=1).contains(&nc1) {
+                                    continue;
+                                }
+                                let digit_count = (d0 != 0) as usize + (d1 != 0) as usize;
+                                let occupied = digit_count != 0;
+                                let starts_block = occupied && !seen;
+                                let next_seen = (seen || occupied) as usize;
+                                let Some(suffix) = dp[bit + 1][state_idx(
+                                    (nc0 + 1) as usize,
+                                    (nc1 + 1) as usize,
+                                    next_seen,
+                                )] else {
+                                    continue;
+                                };
+                                let delta = Cost {
+                                    cost: if occupied { MOD_ADD_FAST_CCX } else { 0 }
+                                        + 2 * FIELD_BITS * digit_count
+                                        + if starts_block { 2 * FIELD_BITS } else { 0 },
+                                    app: if occupied { MOD_ADD_FAST_CCX } else { 0 },
+                                    compact_source: 2 * FIELD_BITS * digit_count,
+                                    block_active_source: if starts_block {
+                                        2 * FIELD_BITS
+                                    } else {
+                                        0
+                                    },
+                                    active_blocks: starts_block as usize,
+                                    occupied: occupied as usize,
+                                    digits: digit_count,
+                                };
+                                best = better(add_cost(delta, suffix), best);
+                            }
+                        }
+                        dp[bit][state_idx(c0i, c1i, seen_idx)] = best;
+                    }
+                }
+            }
+        }
+
+        let row = dp[0][state_idx(1, 1, 0)]
+            .expect("block-active trace carry did not drain");
+        let mut masks = vec![0u128; (total_bits + block - 1) / block];
+        let mut c0i = 1usize;
+        let mut c1i = 1usize;
+        let mut seen_idx = 0usize;
+        for bit in 0..total_bits {
+            if bit % block == 0 {
+                seen_idx = 0;
+            }
+            let b0 = bit_at(x0.mag, bit);
+            let b1 = bit_at(x1.mag, bit);
+            let seen = seen_idx != 0;
+            let c0 = c0i as i8 - 1;
+            let c1 = c1i as i8 - 1;
+            let want = dp[bit][state_idx(c0i, c1i, seen_idx)]
+                .expect("missing block-active trace state");
+            let mut chosen = None::<(usize, usize, usize, i8, i8)>;
+            'digits: for d0 in -1i8..=1 {
+                let s0 = b0 + c0 - d0;
+                if s0.rem_euclid(2) != 0 {
+                    continue;
+                }
+                let nc0 = s0 / 2;
+                if !(-1..=1).contains(&nc0) {
+                    continue;
+                }
+                for d1 in -1i8..=1 {
+                    let s1 = b1 + c1 - d1;
+                    if s1.rem_euclid(2) != 0 {
+                        continue;
+                    }
+                    let nc1 = s1 / 2;
+                    if !(-1..=1).contains(&nc1) {
+                        continue;
+                    }
+                    let digit_count = (d0 != 0) as usize + (d1 != 0) as usize;
+                    let occupied = digit_count != 0;
+                    let starts_block = occupied && !seen;
+                    let next_seen = (seen || occupied) as usize;
+                    let Some(suffix) = dp[bit + 1][state_idx(
+                        (nc0 + 1) as usize,
+                        (nc1 + 1) as usize,
+                        next_seen,
+                    )] else {
+                        continue;
+                    };
+                    let delta = Cost {
+                        cost: if occupied { MOD_ADD_FAST_CCX } else { 0 }
+                            + 2 * FIELD_BITS * digit_count
+                            + if starts_block { 2 * FIELD_BITS } else { 0 },
+                        app: if occupied { MOD_ADD_FAST_CCX } else { 0 },
+                        compact_source: 2 * FIELD_BITS * digit_count,
+                        block_active_source: if starts_block { 2 * FIELD_BITS } else { 0 },
+                        active_blocks: starts_block as usize,
+                        occupied: occupied as usize,
+                        digits: digit_count,
+                    };
+                    if add_cost(delta, suffix) == want {
+                        chosen = Some(((nc0 + 1) as usize, (nc1 + 1) as usize, next_seen, d0, d1));
+                        break 'digits;
+                    }
+                }
+            }
+            let Some((next_c0i, next_c1i, next_seen, d0, d1)) = chosen else {
+                panic!("failed to reconstruct block-active trace");
+            };
+            let offset = bit % block;
+            if d0 != 0 {
+                masks[bit / block] |= 1u128 << (2 * offset);
+            }
+            if d1 != 0 {
+                masks[bit / block] |= 1u128 << (2 * offset + 1);
+            }
+            c0i = next_c0i;
+            c1i = next_c1i;
+            seen_idx = next_seen;
+        }
+
+        (
+            top * (MOD_DOUBLE_FAST_CCX + MOD_HALVE_FAST_CCX) + row.app,
+            row.compact_source,
+            row.block_active_source,
+            row.active_blocks,
+            row.occupied,
+            row.digits,
+            masks,
+        )
+    }
+
     fn halfgcd_signed_two_coeff_apply_active_charged_joint_window_floor_for_test(
         x0: SignedMagU512ForHalfGcdTest,
         x1: SignedMagU512ForHalfGcdTest,
@@ -9247,6 +9482,237 @@ mod tests {
         assert!(
             projected_pointadd_mean > TARGET,
             "pair-active source sharing now clears 2.7M; build a slot-active recoder"
+        );
+    }
+
+    #[test]
+    fn half_gcd_second_column_block_active_source_floor_probe() {
+        // Re-optimize the signed-binary recoder with active-source sharing in
+        // the objective.  This grants an increasingly optimistic premise: one
+        // active source bit can cover a fixed public block of coefficient
+        // positions, while individual sign/magnitude source bits are still
+        // charged.  If small blocks still miss, slot-level sharing is not just
+        // suffering from the old recoding objective.  If large blocks clear,
+        // the hard piece becomes a block-internal active decoder.
+        const SAMPLES: usize = 4096;
+        const DEPTH: usize = 64;
+        const FIELD_BITS: usize = 256;
+        const ACTIVE_CHARGED_POINTADD_MEAN: f64 = 2_756_331.0;
+        const PAIR_ACTIVE_POINTADD_MEAN: f64 = 2_738_013.250;
+        const TARGET: f64 = 2_700_000.0;
+        const BLOCKS: [usize; 6] = [1, 2, 4, 8, 16, 32];
+
+        use std::collections::BTreeSet;
+        let p = SECP256K1_P;
+        let mut rng = 0x5ec0_b10c_ac71_0064u64;
+        let mut baseline_costs = Vec::with_capacity(SAMPLES);
+        let mut block_costs = vec![Vec::<usize>::with_capacity(SAMPLES); BLOCKS.len()];
+        let mut block_sources = vec![Vec::<usize>::with_capacity(SAMPLES); BLOCKS.len()];
+        let mut block_counts = vec![Vec::<usize>::with_capacity(SAMPLES); BLOCKS.len()];
+        let mut block_occupied = vec![Vec::<usize>::with_capacity(SAMPLES); BLOCKS.len()];
+        let mut block_digits = vec![Vec::<usize>::with_capacity(SAMPLES); BLOCKS.len()];
+        let mut block_patterns = vec![Vec::<BTreeSet<u128>>::new(); BLOCKS.len()];
+        let mut block_sample_masks = vec![Vec::<Vec<u128>>::with_capacity(SAMPLES); BLOCKS.len()];
+
+        for _ in 0..SAMPLES {
+            let mut x = rand_u256(&mut rng);
+            if x.is_zero() {
+                x = U256::from(1u64);
+            }
+            let (b, d) = halfgcd_second_column_after_fixed_depth_for_test(x, p, DEPTH);
+            let (base_app, base_compact, base_active, _base_rows, _base_occ, _base_digits) =
+                halfgcd_signed_two_coeff_apply_active_charged_joint_window_floor_for_test(
+                    b, d, 2,
+                );
+            let baseline_cost = base_app + base_compact + base_active;
+            baseline_costs.push(baseline_cost);
+
+            for (idx, &block) in BLOCKS.iter().enumerate() {
+                let (
+                    app,
+                    compact_source,
+                    block_active_source,
+                    active_blocks,
+                    occupied,
+                    digits,
+                    masks,
+                ) = halfgcd_signed_two_coeff_apply_block_active_trace_for_test(b, d, block);
+                let block_cost = app + compact_source + block_active_source;
+                block_costs[idx].push(block_cost);
+                block_sources[idx].push(block_active_source);
+                block_counts[idx].push(active_blocks);
+                block_occupied[idx].push(occupied);
+                block_digits[idx].push(digits);
+                if block_patterns[idx].len() < masks.len() {
+                    block_patterns[idx].resize_with(masks.len(), BTreeSet::new);
+                }
+                for (block_idx, &mask) in masks.iter().enumerate() {
+                    if mask != 0 {
+                        block_patterns[idx][block_idx].insert(mask);
+                    }
+                }
+                block_sample_masks[idx].push(masks);
+                if block == 1 {
+                    assert_eq!(
+                        block_active_source,
+                        2 * FIELD_BITS * active_blocks,
+                        "block1 source should price one active bit per occupied block"
+                    );
+                }
+            }
+        }
+
+        let ceil_log2 = |x: usize| -> usize {
+            if x <= 1 {
+                0
+            } else {
+                usize::BITS as usize - (x - 1).leading_zeros() as usize
+            }
+        };
+        let mean_usize = |rows: &[usize]| -> f64 {
+            rows.iter().map(|&v| v as f64).sum::<f64>() / rows.len() as f64
+        };
+        let baseline_mean = mean_usize(&baseline_costs);
+        let mut block_projected = vec![0.0f64; BLOCKS.len()];
+        let mut best = (usize::MAX, f64::INFINITY, 0.0, 0.0, 0.0, 0.0);
+        for (idx, &block) in BLOCKS.iter().enumerate() {
+            let cost_mean = mean_usize(&block_costs[idx]);
+            let source_mean = mean_usize(&block_sources[idx]);
+            let active_blocks_mean = mean_usize(&block_counts[idx]);
+            let occupied_mean = mean_usize(&block_occupied[idx]);
+            let digits_mean = mean_usize(&block_digits[idx]);
+            let projected_pointadd =
+                ACTIVE_CHARGED_POINTADD_MEAN + 2.0 * (cost_mean - baseline_mean);
+            block_projected[idx] = projected_pointadd;
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_cost_mean={cost_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_source_mean={source_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_active_blocks_mean={active_blocks_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_occupied_mean={occupied_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_digits_mean={digits_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_projected_pointadd_mean={projected_pointadd:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_projected_gap_to_2700k={:.3}",
+                projected_pointadd - TARGET
+            );
+            if projected_pointadd < best.1 {
+                best = (
+                    block,
+                    projected_pointadd,
+                    source_mean,
+                    active_blocks_mean,
+                    occupied_mean,
+                    digits_mean,
+                );
+            }
+        }
+        let mut best_with_mask = (usize::MAX, f64::INFINITY, 0.0, 0usize, 0usize);
+        for (idx, &block) in BLOCKS.iter().enumerate() {
+            let support_bits_by_block = block_patterns[idx]
+                .iter()
+                .map(|patterns| ceil_log2(patterns.len()))
+                .collect::<Vec<_>>();
+            let max_patterns = block_patterns[idx]
+                .iter()
+                .map(|patterns| patterns.len())
+                .max()
+                .unwrap_or(0);
+            let max_bits = support_bits_by_block.iter().copied().max().unwrap_or(0);
+            let mut extra_bits_total = 0usize;
+            for masks in &block_sample_masks[idx] {
+                for (block_idx, &mask) in masks.iter().enumerate() {
+                    if mask != 0 {
+                        extra_bits_total += support_bits_by_block[block_idx];
+                    }
+                }
+            }
+            let extra_bits_mean = extra_bits_total as f64 / SAMPLES as f64;
+            let extra_source_mean = 2.0 * FIELD_BITS as f64 * extra_bits_mean;
+            let projected_with_mask = block_projected[idx] + 2.0 * extra_source_mean;
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_extra_bits_mean={extra_bits_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_extra_source_mean={extra_source_mean:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_max_patterns={max_patterns}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_max_bits={max_bits}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_projected_pointadd_mean={projected_with_mask:.3}"
+            );
+            println!(
+                "METRIC halfgcd_fixed_depth64_block_active_b{block}_mask_projected_gap_to_2700k={:.3}",
+                projected_with_mask - TARGET
+            );
+            if projected_with_mask < best_with_mask.1 {
+                best_with_mask = (
+                    block,
+                    projected_with_mask,
+                    extra_source_mean,
+                    max_patterns,
+                    max_bits,
+                );
+            }
+        }
+        println!("METRIC halfgcd_fixed_depth64_block_active_best_b={}", best.0);
+        println!(
+            "METRIC halfgcd_fixed_depth64_block_active_best_projected_pointadd_mean={:.3}",
+            best.1
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_block_active_best_gap_to_2700k={:.3}",
+            best.1 - TARGET
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_block_active_mask_best_b={}",
+            best_with_mask.0
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_block_active_mask_best_projected_pointadd_mean={:.3}",
+            best_with_mask.1
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_block_active_mask_best_gap_to_2700k={:.3}",
+            best_with_mask.1 - TARGET
+        );
+        eprintln!(
+            "half-GCD block-active floor: best_b={}, projected={:.1}, source={:.1}, active_blocks={:.1}, occupied={:.1}, digits={:.1}, mask_best_b={}, mask_projected={:.1}, mask_extra_source={:.1}, mask_max_patterns={}, mask_max_bits={}",
+            best.0,
+            best.1,
+            best.2,
+            best.3,
+            best.4,
+            best.5,
+            best_with_mask.0,
+            best_with_mask.1,
+            best_with_mask.2,
+            best_with_mask.3,
+            best_with_mask.4
+        );
+        assert!(
+            best.1 < PAIR_ACTIVE_POINTADD_MEAN,
+            "block-active recoding did not improve on the old post-hoc pair-active floor"
+        );
+        assert!(
+            block_projected[2] > TARGET
+                && block_projected[3] < TARGET
+                && best_with_mask.1 > TARGET,
+            "block-active mask support floor now clears; build a block-internal decoder"
         );
     }
 
