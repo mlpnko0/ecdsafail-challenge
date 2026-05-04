@@ -3845,6 +3845,84 @@ mod tests {
         2 * FIELD_BITS * padded_coeff_bits
     }
 
+    fn halfgcd_wnaf_digit_positions_for_test(
+        x: SignedMagU512ForHalfGcdTest,
+        window: usize,
+    ) -> Vec<(usize, i64)> {
+        assert!((2..16).contains(&window));
+        let radix = 1u64 << window;
+        let half = 1u64 << (window - 1);
+        let low_mask = U512::from(radix - 1);
+        let mut k = x.mag;
+        let mut pos = 0usize;
+        let mut digits = Vec::new();
+        while !k.is_zero() {
+            if (k.as_limbs()[0] & 1) != 0 {
+                let residue = (k & low_mask).as_limbs()[0];
+                let digit = if residue >= half {
+                    residue as i64 - radix as i64
+                } else {
+                    residue as i64
+                };
+                assert!(digit != 0 && digit.unsigned_abs() < half);
+                if digit > 0 {
+                    k -= U512::from(digit as u64);
+                } else {
+                    k += U512::from((-digit) as u64);
+                }
+                digits.push((pos, if x.neg { -digit } else { digit }));
+            }
+            k >>= 1usize;
+            pos += 1;
+        }
+        digits
+    }
+
+    fn halfgcd_signed_two_coeff_apply_wnaf_window_floor_for_test(
+        x0: SignedMagU512ForHalfGcdTest,
+        x1: SignedMagU512ForHalfGcdTest,
+        window: usize,
+    ) -> (usize, usize, usize, usize) {
+        // Sparse signed windows save arithmetic rows only if the recoder and
+        // selector can also be sparse.  This generous floor charges one modular
+        // add per occupied signed-digit position and one source-bit product per
+        // encoded signed digit bit; carries, row predicates, recoder cleanup,
+        // and signs are still mostly ignored.
+        const MOD_ADD_FAST_CCX: usize = 1024;
+        const MOD_DOUBLE_FAST_CCX: usize = 255;
+        const MOD_HALVE_FAST_CCX: usize = 255;
+        const FIELD_BITS: usize = 256;
+        let top0 = u512_bit_len_for_halfgcd_test(x0.mag).saturating_sub(1);
+        let top1 = u512_bit_len_for_halfgcd_test(x1.mag).saturating_sub(1);
+        let top = top0.max(top1);
+        let digits0 = halfgcd_wnaf_digit_positions_for_test(x0, window);
+        let digits1 = halfgcd_wnaf_digit_positions_for_test(x1, window);
+        let max_pos = digits0
+            .iter()
+            .chain(digits1.iter())
+            .map(|&(pos, _)| pos)
+            .max()
+            .unwrap_or(0);
+        let mut occupied = vec![false; max_pos + 1];
+        for &(pos, _) in digits0.iter().chain(digits1.iter()) {
+            occupied[pos] = true;
+        }
+        let occupied_positions = occupied.iter().filter(|&&seen| seen).count();
+        let signed_digit_values = 1usize << (window - 1);
+        let table_rows_per_position = (signed_digit_values + 1).pow(2) - 1;
+        let table_row_floor = occupied_positions * table_rows_per_position;
+        let encoded_digit_bits = (digits0.len() + digits1.len()) * window;
+        let source_product_floor = 2 * FIELD_BITS * encoded_digit_bits;
+        let app_floor =
+            top * (MOD_DOUBLE_FAST_CCX + MOD_HALVE_FAST_CCX) + occupied_positions * MOD_ADD_FAST_CCX;
+        (
+            app_floor,
+            table_row_floor,
+            source_product_floor,
+            occupied_positions,
+        )
+    }
+
     fn halfgcd_signed_two_coeff_apply_cost_for_test(
         x0: SignedMagU512ForHalfGcdTest,
         x1: SignedMagU512ForHalfGcdTest,
@@ -6155,6 +6233,8 @@ mod tests {
             vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_source_product_pointadds =
             vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_pointadds =
+            vec![Vec::<isize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_apps =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_selector_floors =
@@ -6162,6 +6242,16 @@ mod tests {
         let mut scan_joint_table_rows =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut scan_joint_source_product_floors =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_apps =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_selector_floors =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_table_rows =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_source_product_floors =
+            vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
+        let mut scan_joint_wnaf_positions =
             vec![Vec::<usize>::with_capacity(samples); WINDOW_SCAN.len()];
         let mut first64_popcount = 0isize;
         let mut first64_static = 0isize;
@@ -6347,20 +6437,36 @@ mod tests {
                     halfgcd_signed_two_coeff_apply_static_window_source_product_floor_for_test(
                         b, d, window, true,
                     );
+                let (
+                    wnaf_app,
+                    wnaf_table_rows,
+                    wnaf_source_product_floor,
+                    wnaf_positions,
+                ) = halfgcd_signed_two_coeff_apply_wnaf_window_floor_for_test(b, d, window);
                 let selector_floor = app_selector_floor.max(table_row_floor);
                 let source_selector_floor = source_product_floor.max(table_row_floor);
+                let wnaf_selector_floor = wnaf_source_product_floor.max(wnaf_table_rows);
                 let pointadd = without_app + 2 * (app_joint + selector_floor) as isize;
                 let table_only_pointadd =
                     without_app + 2 * (app_joint + table_row_floor) as isize;
                 let source_product_pointadd =
                     without_app + 2 * (app_joint + source_selector_floor) as isize;
+                let wnaf_pointadd =
+                    without_app + 2 * (wnaf_app + wnaf_selector_floor) as isize;
                 scan_joint_pointadds[window_idx].push(pointadd);
                 scan_joint_table_only_pointadds[window_idx].push(table_only_pointadd);
                 scan_joint_source_product_pointadds[window_idx].push(source_product_pointadd);
+                scan_joint_wnaf_pointadds[window_idx].push(wnaf_pointadd);
                 scan_joint_apps[window_idx].push(app_joint);
                 scan_joint_selector_floors[window_idx].push(selector_floor);
                 scan_joint_table_rows[window_idx].push(table_row_floor);
                 scan_joint_source_product_floors[window_idx].push(source_product_floor);
+                scan_joint_wnaf_apps[window_idx].push(wnaf_app);
+                scan_joint_wnaf_selector_floors[window_idx].push(wnaf_selector_floor);
+                scan_joint_wnaf_table_rows[window_idx].push(wnaf_table_rows);
+                scan_joint_wnaf_source_product_floors[window_idx]
+                    .push(wnaf_source_product_floor);
+                scan_joint_wnaf_positions[window_idx].push(wnaf_positions);
             }
             if sample_idx < 64 {
                 first64_popcount += popcount_pointadd;
@@ -6417,6 +6523,7 @@ mod tests {
         let mut best_scan: Option<(usize, f64, isize, f64, f64, f64)> = None;
         let mut best_table_only_scan: Option<(usize, f64, isize)> = None;
         let mut best_source_product_scan: Option<(usize, f64, isize, f64, f64)> = None;
+        let mut best_wnaf_scan: Option<(usize, f64, isize, f64, f64, f64, f64, f64)> = None;
         for (window_idx, &window) in WINDOW_SCAN.iter().enumerate() {
             let mean = mean_isize(&scan_joint_pointadds[window_idx]);
             let app_mean = mean_usize(&scan_joint_apps[window_idx]);
@@ -6424,6 +6531,14 @@ mod tests {
             let table_row_mean = mean_usize(&scan_joint_table_rows[window_idx]);
             let source_product_mean =
                 mean_usize(&scan_joint_source_product_floors[window_idx]);
+            let wnaf_mean = mean_isize(&scan_joint_wnaf_pointadds[window_idx]);
+            let wnaf_app_mean = mean_usize(&scan_joint_wnaf_apps[window_idx]);
+            let wnaf_selector_mean =
+                mean_usize(&scan_joint_wnaf_selector_floors[window_idx]);
+            let wnaf_table_row_mean = mean_usize(&scan_joint_wnaf_table_rows[window_idx]);
+            let wnaf_source_product_mean =
+                mean_usize(&scan_joint_wnaf_source_product_floors[window_idx]);
+            let wnaf_positions_mean = mean_usize(&scan_joint_wnaf_positions[window_idx]);
             let p99 = p99_isize(&mut scan_joint_pointadds[window_idx]);
             let table_only_mean = mean_isize(&scan_joint_table_only_pointadds[window_idx]);
             let table_only_p99 = p99_isize(&mut scan_joint_table_only_pointadds[window_idx]);
@@ -6431,6 +6546,7 @@ mod tests {
                 mean_isize(&scan_joint_source_product_pointadds[window_idx]);
             let source_product_p99 =
                 p99_isize(&mut scan_joint_source_product_pointadds[window_idx]);
+            let wnaf_p99 = p99_isize(&mut scan_joint_wnaf_pointadds[window_idx]);
             if best_scan
                 .map(|(_, old_mean, _, _, _, _)| mean < old_mean)
                 .unwrap_or(true)
@@ -6455,6 +6571,21 @@ mod tests {
                     table_row_mean,
                 ));
             }
+            if best_wnaf_scan
+                .map(|(_, old_mean, _, _, _, _, _, _)| wnaf_mean < old_mean)
+                .unwrap_or(true)
+            {
+                best_wnaf_scan = Some((
+                    window,
+                    wnaf_mean,
+                    wnaf_p99,
+                    wnaf_app_mean,
+                    wnaf_selector_mean,
+                    wnaf_source_product_mean,
+                    wnaf_table_row_mean,
+                    wnaf_positions_mean,
+                ));
+            }
         }
         let (
             best_scan_window,
@@ -6476,6 +6607,16 @@ mod tests {
             best_source_product_floor_mean,
             best_source_product_table_row_mean,
         ) = best_source_product_scan.unwrap();
+        let (
+            best_wnaf_scan_window,
+            best_wnaf_scan_mean,
+            best_wnaf_scan_p99,
+            best_wnaf_app_mean,
+            best_wnaf_selector_mean,
+            best_wnaf_source_product_mean,
+            best_wnaf_table_row_mean,
+            best_wnaf_positions_mean,
+        ) = best_wnaf_scan.unwrap();
         let best_scan_required_selector_mean =
             best_scan_selector_mean - ((best_scan_mean - TARGET) / 2.0);
         let best_scan_selector_cut_needed =
@@ -6574,6 +6715,34 @@ mod tests {
             "METRIC halfgcd_fixed_depth64_static_window_source_product_table_row_mean={best_source_product_table_row_mean:.3}"
         );
         println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_best_w={best_wnaf_scan_window}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_pointadd_mean={best_wnaf_scan_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_pointadd_p99={best_wnaf_scan_p99}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_gap_to_2700k={:.3}",
+            best_wnaf_scan_mean - TARGET
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_app_mean={best_wnaf_app_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_selector_floor_mean={best_wnaf_selector_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_source_product_floor_mean={best_wnaf_source_product_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_table_row_floor_mean={best_wnaf_table_row_mean:.3}"
+        );
+        println!(
+            "METRIC halfgcd_fixed_depth64_static_window_wnaf_positions_mean={best_wnaf_positions_mean:.3}"
+        );
+        println!(
             "METRIC halfgcd_fixed_depth64_static_app_gap_to_2700k={:.3}",
             static_mean - TARGET
         );
@@ -6593,7 +6762,7 @@ mod tests {
         );
         println!("METRIC halfgcd_fixed_depth64_app_static_over_popcount_mean={app_delta_mean:.3}");
         eprintln!(
-            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, sep4_mean={sep4_mean:.1}, joint4_mean={joint4_mean:.1}, joint4_with_selector={joint4_with_selector_mean:.1}, scan_best_w={best_scan_window}, scan_best={best_scan_mean:.1}, table_only={best_table_only_scan_mean:.1}, source_best_w={best_source_product_scan_window}, source_best={best_source_product_scan_mean:.1}, selector_required={best_scan_required_selector_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_sep4={app_sep4_mean:.1}, app_joint4={app_joint4_mean:.1}, selector_floor={app_selector_floor_mean:.1}, scan_selector={best_scan_selector_mean:.1}, scan_rows={best_scan_table_row_mean:.1}, source_floor={best_source_product_floor_mean:.1}, source_rows={best_source_product_table_row_mean:.1}, app_delta={app_delta_mean:.1}, sep4_budget={sep4_selector_budget:.1}, joint4_budget={joint4_selector_budget:.1}, selector_over_joint4_budget={selector_over_joint4_budget:.1}"
+            "half-GCD fixed-depth64 coefficient application control model: popcount_mean={popcount_mean:.1}, static_mean={static_mean:.1}, sep4_mean={sep4_mean:.1}, joint4_mean={joint4_mean:.1}, joint4_with_selector={joint4_with_selector_mean:.1}, scan_best_w={best_scan_window}, scan_best={best_scan_mean:.1}, table_only={best_table_only_scan_mean:.1}, source_best_w={best_source_product_scan_window}, source_best={best_source_product_scan_mean:.1}, wnaf_w={best_wnaf_scan_window}, wnaf={best_wnaf_scan_mean:.1}, selector_required={best_scan_required_selector_mean:.1}, first64_static={static_first64:.1}, static_p99={static_p99}, app_popcount_mean={app_popcount_mean:.1}, app_static_mean={app_static_mean:.1}, app_sep4={app_sep4_mean:.1}, app_joint4={app_joint4_mean:.1}, selector_floor={app_selector_floor_mean:.1}, scan_selector={best_scan_selector_mean:.1}, scan_rows={best_scan_table_row_mean:.1}, source_floor={best_source_product_floor_mean:.1}, source_rows={best_source_product_table_row_mean:.1}, wnaf_app={best_wnaf_app_mean:.1}, wnaf_selector={best_wnaf_selector_mean:.1}, wnaf_source={best_wnaf_source_product_mean:.1}, wnaf_rows={best_wnaf_table_row_mean:.1}, wnaf_positions={best_wnaf_positions_mean:.1}, app_delta={app_delta_mean:.1}, sep4_budget={sep4_selector_budget:.1}, joint4_budget={joint4_selector_budget:.1}, selector_over_joint4_budget={selector_over_joint4_budget:.1}"
         );
         assert!(
             popcount_mean > TARGET && popcount_first64 > TARGET,
@@ -6634,6 +6803,12 @@ mod tests {
                 && best_source_product_floor_mean > best_source_product_table_row_mean
                 && best_source_product_floor_mean > best_scan_required_selector_mean,
             "source-product row formation now fits the static-window table-only route; build the selector"
+        );
+        assert!(
+            best_wnaf_scan_mean > TARGET
+                && best_wnaf_scan_mean < best_source_product_scan_mean
+                && best_wnaf_selector_mean > best_scan_required_selector_mean,
+            "sparse signed-window recoding now clears the fixed-depth64 coefficient selector floor; promote half-GCD coefficient application"
         );
     }
 
