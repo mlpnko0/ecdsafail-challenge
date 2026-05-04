@@ -27590,6 +27590,12 @@ mod tests {
             rows.sort_unstable();
             rows[rows.len() * 99 / 100]
         };
+        let max_isize = |rows: &[isize]| -> isize {
+            rows.iter().copied().max().unwrap_or(0)
+        };
+        let over_budget_mass = |rows: &[isize], budget: isize| -> isize {
+            rows.iter().map(|&bits| (bits - budget).max(0)).sum()
+        };
         let dynamic_cost = |len_choices: usize, max_len: usize| -> usize {
             if len_choices > 1 {
                 len_choices * max_len
@@ -27664,7 +27670,7 @@ mod tests {
             .iter()
             .map(|&bits| bits as isize)
             .collect::<Vec<_>>();
-        for (step, _, _) in candidates {
+        for &(step, _, _) in &candidates {
             let mut trial = selective_prefix_bit_rows.clone();
             for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
                 *value += *delta;
@@ -27680,9 +27686,87 @@ mod tests {
             .sum::<f64>()
             / SAMPLES as f64;
         let selective_prefix_bit_p99 = p99_isize(&selective_prefix_bit_rows) as usize;
+        let selective_prefix_bit_max = max_isize(&selective_prefix_bit_rows) as usize;
         let selective_prefix_scratch_p99 = 256 + 2 * 13 + selective_prefix_bit_p99;
         let selective_flatten_steps =
             selected_flatten.iter().filter(|&&selected| selected).count();
+
+        let mut max_constrained_flatten = selected_flatten.clone();
+        let mut max_constrained_prefix_bit_rows = selective_prefix_bit_rows.clone();
+        let mut current_over_budget =
+            over_budget_mass(&max_constrained_prefix_bit_rows, GOOGLE_PREFIX_BIT_BUDGET);
+        while current_over_budget > 0 {
+            let mut best_step = None;
+            let mut best_over_budget = current_over_budget;
+            let mut best_max_bits = max_isize(&max_constrained_prefix_bit_rows);
+            let mut best_lost_benefit = f64::INFINITY;
+            for &(step, benefit, _) in &candidates {
+                if !max_constrained_flatten[step] {
+                    continue;
+                }
+                let mut trial = max_constrained_prefix_bit_rows.clone();
+                for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                    *value -= *delta;
+                }
+                let trial_over_budget = over_budget_mass(&trial, GOOGLE_PREFIX_BIT_BUDGET);
+                let trial_max_bits = max_isize(&trial);
+                let better = trial_over_budget < best_over_budget
+                    || (trial_over_budget == best_over_budget
+                        && (trial_max_bits < best_max_bits
+                            || (trial_max_bits == best_max_bits && benefit < best_lost_benefit)));
+                if better {
+                    best_step = Some(step);
+                    best_over_budget = trial_over_budget;
+                    best_max_bits = trial_max_bits;
+                    best_lost_benefit = benefit;
+                }
+            }
+            let Some(step) = best_step else {
+                break;
+            };
+            for (value, delta) in max_constrained_prefix_bit_rows
+                .iter_mut()
+                .zip(step_bit_delta_rows[step].iter())
+            {
+                *value -= *delta;
+            }
+            max_constrained_flatten[step] = false;
+            current_over_budget = best_over_budget;
+        }
+        for &(step, _, _) in &candidates {
+            if max_constrained_flatten[step] {
+                continue;
+            }
+            let mut trial = max_constrained_prefix_bit_rows.clone();
+            for (value, delta) in trial.iter_mut().zip(step_bit_delta_rows[step].iter()) {
+                *value += *delta;
+            }
+            if max_isize(&trial) <= GOOGLE_PREFIX_BIT_BUDGET {
+                max_constrained_flatten[step] = true;
+                max_constrained_prefix_bit_rows = trial;
+            }
+        }
+        let max_constrained_prefix_bit_mean = max_constrained_prefix_bit_rows
+            .iter()
+            .map(|&bits| bits as f64)
+            .sum::<f64>()
+            / SAMPLES as f64;
+        let max_constrained_prefix_bit_p99 =
+            p99_isize(&max_constrained_prefix_bit_rows) as usize;
+        let max_constrained_prefix_bit_max =
+            max_isize(&max_constrained_prefix_bit_rows) as usize;
+        let max_constrained_prefix_scratch_max =
+            256 + 2 * 13 + max_constrained_prefix_bit_max;
+        let max_constrained_flatten_steps =
+            max_constrained_flatten.iter().filter(|&&selected| selected).count();
+        let max_constrained_trimmed_steps =
+            selective_flatten_steps.saturating_sub(max_constrained_flatten_steps);
+        let max_constrained_over_budget_rows = max_constrained_prefix_bit_rows
+            .iter()
+            .filter(|&&bits| bits > GOOGLE_PREFIX_BIT_BUDGET)
+            .count();
+        let max_constrained_over_budget_mass =
+            over_budget_mass(&max_constrained_prefix_bit_rows, GOOGLE_PREFIX_BIT_BUDGET);
         let reverse_low_bits = |value: usize, len: usize| -> usize {
             let mut reversed = 0usize;
             for bit in 0..len {
@@ -27729,147 +27813,211 @@ mod tests {
                 }
                 codebook
             };
-        let mut selective_codebooks = Vec::with_capacity(MAX_STEPS);
-        let mut selective_schedule_codebook_steps = 0usize;
-        let mut selective_schedule_prefix_collisions = 0usize;
-        let mut selective_schedule_max_code_len = 0usize;
-        let mut selective_schedule_max_len_classes = 0usize;
-        for step in 0..MAX_STEPS {
-            let lens_by_symbol = if selected_flatten[step] {
-                &balanced_code_lens_by_step[step]
-            } else {
-                &shannon_code_lens_by_step[step]
-            };
-            if !lens_by_symbol.is_empty() {
-                selective_schedule_codebook_steps += 1;
-            }
-            let codebook = build_canonical_codebook(lens_by_symbol);
-            let mut lens = codebook.iter().map(|&(_, _, len)| len).collect::<Vec<_>>();
-            lens.sort_unstable();
-            lens.dedup();
-            selective_schedule_max_len_classes =
-                selective_schedule_max_len_classes.max(lens.len());
-            selective_schedule_max_code_len =
-                selective_schedule_max_code_len.max(lens.iter().copied().max().unwrap_or(0));
-            for i in 0..codebook.len() {
-                for j in 0..codebook.len() {
-                    if i == j {
-                        continue;
-                    }
-                    let (_, bits_i, len_i) = codebook[i];
-                    let (_, bits_j, len_j) = codebook[j];
-                    if len_i > 0
-                        && len_i <= len_j
-                        && (bits_j & ((1usize << len_i) - 1)) == bits_i
-                    {
-                        selective_schedule_prefix_collisions += 1;
-                    }
-                }
-            }
-            selective_codebooks.push(codebook);
-        }
-        let decode_selective_symbol =
-            |step: usize, stream_bits: &[u8], cursor: usize| -> Option<(usize, usize)> {
-                let codebook = &selective_codebooks[step];
-                if codebook.is_empty() {
-                    return None;
-                }
-                for &(symbol, bits, len) in codebook {
-                    if cursor + len > stream_bits.len() {
-                        continue;
-                    }
-                    let mut got = 0usize;
-                    for bit in 0..len {
-                        got |= (stream_bits[cursor + bit] as usize) << bit;
-                    }
-                    if got == bits {
-                        return Some((symbol, len));
-                    }
-                }
-                None
-            };
-        let mut selective_schedule_bit_rows = Vec::with_capacity(SAMPLES);
-        let mut selective_schedule_decode_mismatches = 0usize;
-        let mut selective_schedule_cursor_mismatches = 0usize;
-        let mut selective_schedule_max_bits = 0usize;
-        let mut selective_schedule_decoded_symbols = 0usize;
-        for alignments in &traces {
-            let mut stream_bits = Vec::<u8>::new();
-            for (step, &alignment) in alignments.iter().enumerate() {
-                let codebook = &selective_codebooks[step];
-                let &(_, bits, len) = codebook
-                    .iter()
-                    .find(|&&(symbol, _, _)| symbol == alignment)
-                    .expect("selective schedule missing code for alignment");
-                for bit in 0..len {
-                    stream_bits.push(((bits >> bit) & 1) as u8);
-                }
-            }
-
-            let mut cursor = 0usize;
-            let mut pos = 0usize;
-            while pos < alignments.len() {
-                if let Some((symbol, len)) = decode_selective_symbol(pos, &stream_bits, cursor) {
-                    selective_schedule_decode_mismatches +=
-                        (symbol != alignments[pos]) as usize;
-                    cursor += len;
-                    selective_schedule_decoded_symbols += 1;
+        let evaluate_schedule_codebooks = |flatten: &[bool]| -> (
+            usize,
+            usize,
+            usize,
+            usize,
+            f64,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+        ) {
+            let mut codebooks = Vec::with_capacity(MAX_STEPS);
+            let mut codebook_steps = 0usize;
+            let mut prefix_collisions = 0usize;
+            let mut max_code_len = 0usize;
+            let mut max_len_classes = 0usize;
+            for step in 0..MAX_STEPS {
+                let lens_by_symbol = if flatten[step] {
+                    &balanced_code_lens_by_step[step]
                 } else {
-                    selective_schedule_decode_mismatches += 1;
+                    &shannon_code_lens_by_step[step]
+                };
+                if !lens_by_symbol.is_empty() {
+                    codebook_steps += 1;
                 }
-                if pos + 1 < alignments.len() {
-                    if let Some((symbol, len)) =
-                        decode_selective_symbol(pos + 1, &stream_bits, cursor)
-                    {
-                        selective_schedule_decode_mismatches +=
-                            (symbol != alignments[pos + 1]) as usize;
-                        cursor += len;
-                        selective_schedule_decoded_symbols += 1;
-                    } else {
-                        selective_schedule_decode_mismatches += 1;
+                let codebook = build_canonical_codebook(lens_by_symbol);
+                let mut lens = codebook.iter().map(|&(_, _, len)| len).collect::<Vec<_>>();
+                lens.sort_unstable();
+                lens.dedup();
+                max_len_classes = max_len_classes.max(lens.len());
+                max_code_len = max_code_len.max(lens.iter().copied().max().unwrap_or(0));
+                for i in 0..codebook.len() {
+                    for j in 0..codebook.len() {
+                        if i == j {
+                            continue;
+                        }
+                        let (_, bits_i, len_i) = codebook[i];
+                        let (_, bits_j, len_j) = codebook[j];
+                        if len_i > 0
+                            && len_i <= len_j
+                            && (bits_j & ((1usize << len_i) - 1)) == bits_i
+                        {
+                            prefix_collisions += 1;
+                        }
                     }
                 }
-                pos += 2;
+                codebooks.push(codebook);
             }
-            selective_schedule_cursor_mismatches += (cursor != stream_bits.len()) as usize;
-            selective_schedule_max_bits = selective_schedule_max_bits.max(stream_bits.len());
-            selective_schedule_bit_rows.push(stream_bits.len());
-        }
-        let selective_schedule_bit_mean = mean_usize(&selective_schedule_bit_rows);
-        let selective_schedule_bit_p99 = p99_usize(&mut selective_schedule_bit_rows);
-        let mut selective_dynamic_even_rows = Vec::with_capacity(SAMPLES);
-        let mut selective_variable_decode_rows = Vec::with_capacity(SAMPLES);
-        for alignments in &traces {
-            let mut selective_dynamic_even = 0usize;
-            let mut selective_variable_decode = 0usize;
-            let mut pos = 0usize;
-            while pos < alignments.len() {
-                selective_variable_decode += tree_oneway_ccx(align_by_step[pos].len());
-                if pos + 1 < alignments.len() {
-                    let len_choices = if selected_flatten[pos] {
-                        balanced_code_len_sets[pos].len()
-                    } else {
-                        code_len_sets[pos].len()
-                    };
-                    let max_len_next = if selected_flatten[pos + 1] {
-                        balanced_max_code_lens[pos + 1]
-                    } else {
-                        max_code_lens[pos + 1]
-                    };
-                    let dynamic_read = dynamic_cost(len_choices, max_len_next);
-                    selective_dynamic_even += dynamic_read;
-                    selective_variable_decode += dynamic_read;
-                    selective_variable_decode += tree_oneway_ccx(align_by_step[pos + 1].len());
+            let decode_symbol =
+                |step: usize, stream_bits: &[u8], cursor: usize| -> Option<(usize, usize)> {
+                    let codebook = &codebooks[step];
+                    if codebook.is_empty() {
+                        return None;
+                    }
+                    for &(symbol, bits, len) in codebook {
+                        if cursor + len > stream_bits.len() {
+                            continue;
+                        }
+                        let mut got = 0usize;
+                        for bit in 0..len {
+                            got |= (stream_bits[cursor + bit] as usize) << bit;
+                        }
+                        if got == bits {
+                            return Some((symbol, len));
+                        }
+                    }
+                    None
+                };
+            let mut bit_rows = Vec::with_capacity(SAMPLES);
+            let mut decode_mismatches = 0usize;
+            let mut cursor_mismatches = 0usize;
+            let mut max_bits = 0usize;
+            let mut decoded_symbols = 0usize;
+            for alignments in &traces {
+                let mut stream_bits = Vec::<u8>::new();
+                for (step, &alignment) in alignments.iter().enumerate() {
+                    let codebook = &codebooks[step];
+                    let &(_, bits, len) = codebook
+                        .iter()
+                        .find(|&&(symbol, _, _)| symbol == alignment)
+                        .expect("schedule missing code for alignment");
+                    for bit in 0..len {
+                        stream_bits.push(((bits >> bit) & 1) as u8);
+                    }
                 }
-                pos += 2;
+
+                let mut cursor = 0usize;
+                let mut pos = 0usize;
+                while pos < alignments.len() {
+                    if let Some((symbol, len)) = decode_symbol(pos, &stream_bits, cursor) {
+                        decode_mismatches += (symbol != alignments[pos]) as usize;
+                        cursor += len;
+                        decoded_symbols += 1;
+                    } else {
+                        decode_mismatches += 1;
+                    }
+                    if pos + 1 < alignments.len() {
+                        if let Some((symbol, len)) = decode_symbol(pos + 1, &stream_bits, cursor)
+                        {
+                            decode_mismatches += (symbol != alignments[pos + 1]) as usize;
+                            cursor += len;
+                            decoded_symbols += 1;
+                        } else {
+                            decode_mismatches += 1;
+                        }
+                    }
+                    pos += 2;
+                }
+                cursor_mismatches += (cursor != stream_bits.len()) as usize;
+                max_bits = max_bits.max(stream_bits.len());
+                bit_rows.push(stream_bits.len());
             }
-            selective_dynamic_even_rows.push(selective_dynamic_even);
-            selective_variable_decode_rows.push(selective_variable_decode);
-        }
-        let selective_dynamic_even_mean = mean_usize(&selective_dynamic_even_rows);
-        let selective_variable_decode_mean = mean_usize(&selective_variable_decode_rows);
-        let selective_dynamic_even_p99 = p99_usize(&mut selective_dynamic_even_rows);
-        let selective_variable_decode_p99 = p99_usize(&mut selective_variable_decode_rows);
+            let bit_mean = mean_usize(&bit_rows);
+            let bit_p99 = p99_usize(&mut bit_rows);
+            (
+                codebook_steps,
+                prefix_collisions,
+                max_code_len,
+                max_len_classes,
+                bit_mean,
+                bit_p99,
+                max_bits,
+                decoded_symbols,
+                decode_mismatches,
+                cursor_mismatches,
+            )
+        };
+        let (
+            selective_schedule_codebook_steps,
+            selective_schedule_prefix_collisions,
+            selective_schedule_max_code_len,
+            selective_schedule_max_len_classes,
+            selective_schedule_bit_mean,
+            selective_schedule_bit_p99,
+            selective_schedule_max_bits,
+            selective_schedule_decoded_symbols,
+            selective_schedule_decode_mismatches,
+            selective_schedule_cursor_mismatches,
+        ) = evaluate_schedule_codebooks(&selected_flatten);
+        let (
+            max_constrained_schedule_codebook_steps,
+            max_constrained_schedule_prefix_collisions,
+            max_constrained_schedule_max_code_len,
+            max_constrained_schedule_max_len_classes,
+            max_constrained_schedule_bit_mean,
+            max_constrained_schedule_bit_p99,
+            max_constrained_schedule_max_bits,
+            max_constrained_schedule_decoded_symbols,
+            max_constrained_schedule_decode_mismatches,
+            max_constrained_schedule_cursor_mismatches,
+        ) = evaluate_schedule_codebooks(&max_constrained_flatten);
+        let schedule_decode_stats = |flatten: &[bool]| -> (f64, usize, f64, usize) {
+            let mut dynamic_even_rows = Vec::with_capacity(SAMPLES);
+            let mut variable_decode_rows = Vec::with_capacity(SAMPLES);
+            for alignments in &traces {
+                let mut dynamic_even = 0usize;
+                let mut variable_decode = 0usize;
+                let mut pos = 0usize;
+                while pos < alignments.len() {
+                    variable_decode += tree_oneway_ccx(align_by_step[pos].len());
+                    if pos + 1 < alignments.len() {
+                        let len_choices = if flatten[pos] {
+                            balanced_code_len_sets[pos].len()
+                        } else {
+                            code_len_sets[pos].len()
+                        };
+                        let max_len_next = if flatten[pos + 1] {
+                            balanced_max_code_lens[pos + 1]
+                        } else {
+                            max_code_lens[pos + 1]
+                        };
+                        let dynamic_read = dynamic_cost(len_choices, max_len_next);
+                        dynamic_even += dynamic_read;
+                        variable_decode += dynamic_read;
+                        variable_decode += tree_oneway_ccx(align_by_step[pos + 1].len());
+                    }
+                    pos += 2;
+                }
+                dynamic_even_rows.push(dynamic_even);
+                variable_decode_rows.push(variable_decode);
+            }
+            let dynamic_even_mean = mean_usize(&dynamic_even_rows);
+            let variable_decode_mean = mean_usize(&variable_decode_rows);
+            let dynamic_even_p99 = p99_usize(&mut dynamic_even_rows);
+            let variable_decode_p99 = p99_usize(&mut variable_decode_rows);
+            (
+                dynamic_even_mean,
+                dynamic_even_p99,
+                variable_decode_mean,
+                variable_decode_p99,
+            )
+        };
+        let (
+            selective_dynamic_even_mean,
+            selective_dynamic_even_p99,
+            selective_variable_decode_mean,
+            selective_variable_decode_p99,
+        ) = schedule_decode_stats(&selected_flatten);
+        let (
+            max_constrained_dynamic_even_mean,
+            max_constrained_dynamic_even_p99,
+            max_constrained_variable_decode_mean,
+            max_constrained_variable_decode_p99,
+        ) = schedule_decode_stats(&max_constrained_flatten);
         let arithmetic_over_node_roundtrip =
             materialized_digit_mean / (2.0 * prefix_node_mean);
         let weighted_total_over_node_roundtrip =
@@ -27890,6 +28038,10 @@ mod tests {
             selective_variable_decode_mean / prefix_node_mean;
         let selective_total_over_node_roundtrip =
             selective_parser_over_node_roundtrip + arithmetic_over_node_roundtrip;
+        let max_constrained_parser_over_node_roundtrip =
+            max_constrained_variable_decode_mean / prefix_node_mean;
+        let max_constrained_total_over_node_roundtrip =
+            max_constrained_parser_over_node_roundtrip + arithmetic_over_node_roundtrip;
         let weighted_scaled_gap = PREFIX_TREE_GAP_TO_2700K
             + 8.0 * prefix_node_mean * (weighted_total_over_node_roundtrip - 1.0);
         let variable_scaled_gap = PREFIX_TREE_GAP_TO_2700K
@@ -27900,6 +28052,8 @@ mod tests {
             + 8.0 * prefix_node_mean * (balanced_total_over_node_roundtrip - 1.0);
         let selective_scaled_gap = PREFIX_TREE_GAP_TO_2700K
             + 8.0 * prefix_node_mean * (selective_total_over_node_roundtrip - 1.0);
+        let max_constrained_scaled_gap = PREFIX_TREE_GAP_TO_2700K
+            + 8.0 * prefix_node_mean * (max_constrained_total_over_node_roundtrip - 1.0);
         let span24_scaled_gap = PREFIX_TREE_GAP_TO_2700K
             + 8.0 * prefix_node_mean * (SPAN24_TOY_RATIO - 1.0);
         let weighted_projection = 2_700_000.0 + weighted_scaled_gap;
@@ -27907,6 +28061,7 @@ mod tests {
         let variable_offset1_projection = 2_700_000.0 + variable_offset1_scaled_gap;
         let balanced_projection = 2_700_000.0 + balanced_scaled_gap;
         let selective_projection = 2_700_000.0 + selective_scaled_gap;
+        let max_constrained_projection = 2_700_000.0 + max_constrained_scaled_gap;
 
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_prefix_node_mean={prefix_node_mean:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_prefix_node_p99={prefix_node_p99}");
@@ -27932,8 +28087,17 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_balanced_variable_decode_p99={balanced_variable_decode_p99}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_mean={selective_prefix_bit_mean:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99={selective_prefix_bit_p99}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_max={selective_prefix_bit_max}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_scratch_p99={selective_prefix_scratch_p99}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_flatten_steps={selective_flatten_steps}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_mean={max_constrained_prefix_bit_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99={max_constrained_prefix_bit_p99}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max={max_constrained_prefix_bit_max}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_scratch_max={max_constrained_prefix_scratch_max}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_flatten_steps={max_constrained_flatten_steps}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_trimmed_steps={max_constrained_trimmed_steps}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_rows={max_constrained_over_budget_rows}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_mass={max_constrained_over_budget_mass}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_codebook_steps={selective_schedule_codebook_steps}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_code_len={selective_schedule_max_code_len}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_len_classes={selective_schedule_max_len_classes}");
@@ -27944,10 +28108,24 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_prefix_collisions={selective_schedule_prefix_collisions}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_decode_mismatches={selective_schedule_decode_mismatches}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_cursor_mismatches={selective_schedule_cursor_mismatches}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_codebook_steps={max_constrained_schedule_codebook_steps}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_code_len={max_constrained_schedule_max_code_len}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_len_classes={max_constrained_schedule_max_len_classes}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_mean={max_constrained_schedule_bit_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_p99={max_constrained_schedule_bit_p99}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_bits={max_constrained_schedule_max_bits}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decoded_symbols={max_constrained_schedule_decoded_symbols}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_prefix_collisions={max_constrained_schedule_prefix_collisions}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decode_mismatches={max_constrained_schedule_decode_mismatches}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_cursor_mismatches={max_constrained_schedule_cursor_mismatches}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_dynamic_even_mean={selective_dynamic_even_mean:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_dynamic_even_p99={selective_dynamic_even_p99}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_variable_decode_mean={selective_variable_decode_mean:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_variable_decode_p99={selective_variable_decode_p99}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_mean={max_constrained_dynamic_even_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_p99={max_constrained_dynamic_even_p99}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_mean={max_constrained_variable_decode_mean:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_p99={max_constrained_variable_decode_p99}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_arithmetic_over_node_roundtrip={arithmetic_over_node_roundtrip:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_total_over_node_roundtrip={weighted_total_over_node_roundtrip:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_variable_parser_over_node_roundtrip={variable_parser_over_node_roundtrip:.6}");
@@ -27958,6 +28136,8 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_balanced_total_over_node_roundtrip={balanced_total_over_node_roundtrip:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_parser_over_node_roundtrip={selective_parser_over_node_roundtrip:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_total_over_node_roundtrip={selective_total_over_node_roundtrip:.6}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_parser_over_node_roundtrip={max_constrained_parser_over_node_roundtrip:.6}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_total_over_node_roundtrip={max_constrained_total_over_node_roundtrip:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_ratio_budget={RATIO_BUDGET:.6}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_strict_prefix_bit_budget={STRICT_PREFIX_BIT_BUDGET}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_google_prefix_bit_budget={GOOGLE_PREFIX_BIT_BUDGET}");
@@ -27966,11 +28146,13 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_variable_offset1_gap_to_2700k={variable_offset1_scaled_gap:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_balanced_gap_to_2700k={balanced_scaled_gap:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_gap_to_2700k={selective_scaled_gap:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_gap_to_2700k={max_constrained_scaled_gap:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_projected_toffoli={weighted_projection:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_variable_projected_toffoli={variable_projection:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_variable_offset1_projected_toffoli={variable_offset1_projection:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_balanced_projected_toffoli={balanced_projection:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_selective_projected_toffoli={selective_projection:.3}");
+        println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_projected_toffoli={max_constrained_projection:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_span24_uniform_gap_to_2700k={span24_scaled_gap:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_mean={span24_symbol_mean:.3}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_p99={span24_symbol_p99}");
@@ -27978,7 +28160,7 @@ mod tests {
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_support_max_span={support_max_span}");
         println!("METRIC centered_direct_restoring_final_low_branch_prefix_support_weighted_support_max_symbols={support_max_symbols}");
         eprintln!(
-            "Direct-centered low-branch weighted prefix span floor: prefix_nodes={prefix_node_mean:.1}, materialized={materialized_digit_mean:.1}, tree_decode={tree_decode_mean:.1}, dyn_even/odd=({dynamic_even_mean:.1},{dynamic_odd_mean:.1}), shannon_bits_p99={shannon_prefix_bit_p99}, balanced_bits_p99={balanced_prefix_bit_p99}, selective_bits_p99={selective_prefix_bit_p99}, selective_scratch={selective_prefix_scratch_p99}, balanced_dyn={balanced_dynamic_even_mean:.1}, selective_dyn={selective_dynamic_even_mean:.1}, flat_ratio={weighted_total_over_node_roundtrip:.3}x, variable_ratio={variable_total_over_node_roundtrip:.3}x, offset1_ratio={variable_offset1_total_over_node_roundtrip:.3}x, balanced_ratio={balanced_total_over_node_roundtrip:.3}x, selective_ratio={selective_total_over_node_roundtrip:.3}x, budget={RATIO_BUDGET:.3}x, gaps=({weighted_scaled_gap:.1},{variable_scaled_gap:.1},{variable_offset1_scaled_gap:.1},{balanced_scaled_gap:.1},{selective_scaled_gap:.1}), span24_uniform_gap={span24_scaled_gap:.1}, span24_symbols={span24_symbol_mean:.1}/{span24_symbol_p99}"
+            "Direct-centered low-branch weighted prefix span floor: prefix_nodes={prefix_node_mean:.1}, materialized={materialized_digit_mean:.1}, tree_decode={tree_decode_mean:.1}, dyn_even/odd=({dynamic_even_mean:.1},{dynamic_odd_mean:.1}), shannon_bits_p99={shannon_prefix_bit_p99}, balanced_bits_p99={balanced_prefix_bit_p99}, selective_bits_p99/max={selective_prefix_bit_p99}/{selective_prefix_bit_max}, maxfit_bits_p99/max={max_constrained_prefix_bit_p99}/{max_constrained_prefix_bit_max}, selective_scratch={selective_prefix_scratch_p99}, maxfit_scratch={max_constrained_prefix_scratch_max}, balanced_dyn={balanced_dynamic_even_mean:.1}, selective_dyn={selective_dynamic_even_mean:.1}, maxfit_dyn={max_constrained_dynamic_even_mean:.1}, flat_ratio={weighted_total_over_node_roundtrip:.3}x, variable_ratio={variable_total_over_node_roundtrip:.3}x, offset1_ratio={variable_offset1_total_over_node_roundtrip:.3}x, balanced_ratio={balanced_total_over_node_roundtrip:.3}x, selective_ratio={selective_total_over_node_roundtrip:.3}x, maxfit_ratio={max_constrained_total_over_node_roundtrip:.3}x, budget={RATIO_BUDGET:.3}x, gaps=({weighted_scaled_gap:.1},{variable_scaled_gap:.1},{variable_offset1_scaled_gap:.1},{balanced_scaled_gap:.1},{selective_scaled_gap:.1},{max_constrained_scaled_gap:.1}), span24_uniform_gap={span24_scaled_gap:.1}, span24_symbols={span24_symbol_mean:.1}/{span24_symbol_p99}"
         );
 
         assert!(
@@ -28015,8 +28197,27 @@ mod tests {
                 && selective_schedule_decode_mismatches == 0
                 && selective_schedule_cursor_mismatches == 0
                 && selective_schedule_bit_p99 == selective_prefix_bit_p99
+                && selective_schedule_max_bits == selective_prefix_bit_max
                 && selective_schedule_decoded_symbols > 800_000,
             "selective schedule canonical codebook wiring failed"
+        );
+        assert!(
+            max_constrained_over_budget_mass == 0
+                && max_constrained_over_budget_rows == 0
+                && max_constrained_prefix_bit_max <= GOOGLE_PREFIX_BIT_BUDGET as usize
+                && max_constrained_prefix_scratch_max <= 663
+                && max_constrained_total_over_node_roundtrip < RATIO_BUDGET
+                && max_constrained_scaled_gap < -30_000.0,
+            "max-constrained selective schedule no longer preserves the low-qubit margin"
+        );
+        assert!(
+            max_constrained_schedule_prefix_collisions == 0
+                && max_constrained_schedule_decode_mismatches == 0
+                && max_constrained_schedule_cursor_mismatches == 0
+                && max_constrained_schedule_bit_p99 == max_constrained_prefix_bit_p99
+                && max_constrained_schedule_max_bits == max_constrained_prefix_bit_max
+                && max_constrained_schedule_decoded_symbols > 800_000,
+            "max-constrained selective schedule canonical codebook wiring failed"
         );
     }
 

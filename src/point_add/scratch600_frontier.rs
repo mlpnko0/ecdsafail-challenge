@@ -175,7 +175,7 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             name: "direct_centered_restoring_final_low_branch_selective_prefix_flatten_floor",
             scratch_bits: 663,
             charged_toffoli: None,
-            blocker: "selective length-flattening spends the 381 prefix-bit p99 budget exactly, fits 663 scratch, and projects 2657019 with 42981 margin; support-2..18 generated balanced block2 selected-add/sub roundtrip family is phase-clean across 289 pairs with max 804 CCX, and mixed schedule codebooks decode 856854 sampled symbols with no collisions or mismatches; promotion still needs full production circuit insertion and exact worst-case schedule bounds",
+            blocker: "p99-only selective length-flattening has 394 sampled max prefix bits and would need 676 scratch; trimming 9 balanced steps gives a 381-bit sampled max, fits 663 scratch, and projects 2661534 with 38466 margin; support-2..18 generated balanced block2 selected-add/sub roundtrip family is phase-clean across 289 pairs with max 804 CCX, and peak-fit mixed schedule codebooks decode 856854 sampled symbols with no collisions or mismatches; promotion still needs full production circuit insertion and a non-sampled domain proof",
         },
         Candidate {
             name: "direct_centered_restoring_final_mixed4to8_joint_binary_floor",
@@ -817,9 +817,27 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         415usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99 =
         381usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_max =
+        394usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_scratch_p99 =
         663usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_flatten_steps = 92usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_mean =
+        338.549f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99 =
+        372usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max =
+        381usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_scratch_max =
+        663usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_flatten_steps =
+        83usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_trimmed_steps =
+        9usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_rows =
+        0usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_mass =
+        0isize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_codebook_steps =
         126usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_code_len =
@@ -840,10 +858,44 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
         0usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_cursor_mismatches =
         0usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_codebook_steps =
+        126usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_code_len =
+        13usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_len_classes =
+        12usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_mean =
+        338.549f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_p99 =
+        372usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_bits =
+        381usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decoded_symbols =
+        856_854usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_prefix_collisions =
+        0usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decode_mismatches =
+        0usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_cursor_mismatches =
+        0usize;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_dynamic_even_mean =
         1_169.937f64;
     let direct_restoring_final_low_branch_prefix_support_weighted_selective_variable_decode_mean =
         3_835.807f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_mean =
+        1_734.331f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_p99 =
+        1_807usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_mean =
+        4_400.200f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_p99 =
+        4_707usize;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_total_over_node_roundtrip =
+        6.883_727f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_gap =
+        -38_465.817f64;
+    let direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_projected_toffoli =
+        2_661_534.183f64;
     let direct_restoring_final_low_branch_prefix_support_weighted_span24_uniform_gap =
         1_684.686f64;
     let direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_mean = 1.000f64;
@@ -1914,8 +1966,17 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_shannon_prefix_bit_p99={direct_restoring_final_low_branch_prefix_support_weighted_shannon_prefix_bit_p99}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_balanced_prefix_bit_p99={direct_restoring_final_low_branch_prefix_support_weighted_balanced_prefix_bit_p99}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99={direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_max={direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_max}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_scratch_p99={direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_scratch_p99}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_flatten_steps={direct_restoring_final_low_branch_prefix_support_weighted_selective_flatten_steps}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_mean={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_scratch_max={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_scratch_max}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_flatten_steps={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_flatten_steps}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_trimmed_steps={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_trimmed_steps}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_rows={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_rows}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_mass={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_mass}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_codebook_steps={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_codebook_steps}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_code_len={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_code_len}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_len_classes={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_max_len_classes}");
@@ -1926,8 +1987,25 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_prefix_collisions={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_prefix_collisions}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_decode_mismatches={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_decode_mismatches}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_cursor_mismatches={direct_restoring_final_low_branch_prefix_support_weighted_selective_schedule_cursor_mismatches}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_codebook_steps={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_codebook_steps}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_code_len={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_code_len}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_len_classes={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_len_classes}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_mean={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_p99={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_p99}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_bits={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_bits}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decoded_symbols={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decoded_symbols}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_prefix_collisions={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_prefix_collisions}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decode_mismatches={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decode_mismatches}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_cursor_mismatches={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_cursor_mismatches}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_dynamic_even_mean={direct_restoring_final_low_branch_prefix_support_weighted_selective_dynamic_even_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_selective_variable_decode_mean={direct_restoring_final_low_branch_prefix_support_weighted_selective_variable_decode_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_mean={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_p99={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_p99}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_mean={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_mean:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_p99={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_p99}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_total_over_node_roundtrip={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_total_over_node_roundtrip:.6}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_gap_to_2700k={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_gap:.3}");
+    println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_projected_toffoli={direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_projected_toffoli:.3}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_span24_uniform_gap_to_2700k={direct_restoring_final_low_branch_prefix_support_weighted_span24_uniform_gap:.3}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_mean={direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_mean:.3}");
     println!("METRIC scratch600_direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_p99={direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_p99}");
@@ -2904,6 +2982,8 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
                 > 381
             && direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99
                 == 381
+            && direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_max
+                > direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_bit_p99
             && direct_restoring_final_low_branch_prefix_support_weighted_selective_prefix_scratch_p99
                 == GOOGLE_LOW_QUBIT_SCRATCH
             && direct_restoring_final_low_branch_prefix_support_weighted_selective_flatten_steps
@@ -2931,6 +3011,48 @@ fn scratch600_frontier_requires_selector_or_parser_breakthrough() {
             && direct_restoring_final_low_branch_prefix_support_weighted_selective_gap < -40_000.0
             && direct_restoring_final_low_branch_prefix_support_weighted_selective_projected_toffoli
                 < 2_660_000.0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99
+                <= 381
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max
+                == 381
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_scratch_max
+                == GOOGLE_LOW_QUBIT_SCRATCH
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_flatten_steps
+                == 83
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_trimmed_steps
+                == 9
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_rows
+                == 0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_over_budget_mass
+                == 0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_codebook_steps
+                == 126
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_code_len
+                == 13
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_len_classes
+                == 12
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_bit_p99
+                == direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_p99
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_max_bits
+                == direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_prefix_bit_max
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decoded_symbols
+                > 800_000
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_prefix_collisions
+                == 0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_decode_mismatches
+                == 0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_schedule_cursor_mismatches
+                == 0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_dynamic_even_p99
+                == 1_807
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_variable_decode_p99
+                == 4_707
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_total_over_node_roundtrip
+                < direct_restoring_final_low_branch_prefix_support_weighted_ratio_budget
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_gap
+                < -30_000.0
+            && direct_restoring_final_low_branch_prefix_support_weighted_maxconstrained_projected_toffoli
+                < 2_670_000.0
             && direct_restoring_final_low_branch_prefix_support_weighted_span24_uniform_gap > 0.0
             && direct_restoring_final_low_branch_prefix_support_weighted_span24_symbol_p99 == 1
             && direct_restoring_final_low_branch_prefix_support_weighted_support_noncontig_steps
