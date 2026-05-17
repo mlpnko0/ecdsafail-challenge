@@ -536,6 +536,16 @@ fn direct_const_halve_enabled() -> bool {
     env_flag_enabled("KAL_DIRECT_CONST_HALVE", !pair1_mul1_karatsuba_enabled(N))
 }
 
+fn pair1_mul2_karatsuba_enabled(n: usize) -> bool {
+    let min_n = std::env::var("POINT_ADD_KARATSUBA_MIN_N")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(256);
+    point_add_karatsuba_enabled()
+        && n >= min_n
+        && env_flag_enabled("KAL_PAIR1_MUL2_KARATSUBA", true)
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Cuccaro ripple-carry adder
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2995,9 +3005,9 @@ fn karatsuba_forward(
     }
 }
 
-/// Low-peak variant of `karatsuba_forward`. Uses `schoolbook_mul_into_addsub_lowq`
-/// for all three inner schoolbook muls and non-fast half-sum adders, saving
-/// ~n qubits of peak at the cost of extra Toffolis.
+/// Half-sum-lowq variant of `karatsuba_forward`. Only the Karatsuba
+/// half-sum compute/uncompute and z1 merge use non-fast adders; the three
+/// inner schoolbook products remain the normal phase-clean implementation.
 fn karatsuba_forward_lowq(
     b: &mut B,
     x: &[QubitId],
@@ -3014,18 +3024,18 @@ fn karatsuba_forward_lowq(
 
     {
         let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
-        schoolbook_mul_into_addsub_lowq(b, &x_lo, &y_lo, &slice);
+        schoolbook_mul_into_addsub(b, &x_lo, &y_lo, &slice);
     }
     {
         let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
-        schoolbook_mul_into_addsub_lowq(b, &x_hi, &y_hi, &slice);
+        schoolbook_mul_into_addsub(b, &x_hi, &y_hi, &slice);
     }
 
     let x_sum = b.alloc_qubits(h + 1);
     let y_sum = b.alloc_qubits(h + 1);
     karatsuba_half_sum_compute_lowq(b, &x_lo, &x_hi, &x_sum);
     karatsuba_half_sum_compute_lowq(b, &y_lo, &y_hi, &y_sum);
-    schoolbook_mul_into_addsub_lowq(b, &x_sum, &y_sum, z1_reg);
+    schoolbook_mul_into_addsub(b, &x_sum, &y_sum, z1_reg);
     karatsuba_half_sum_uncompute_lowq(b, &y_lo, &y_hi, &y_sum);
     karatsuba_half_sum_uncompute_lowq(b, &x_lo, &x_hi, &x_sum);
     b.free_vec(&y_sum);
@@ -3098,7 +3108,7 @@ fn karatsuba_inverse_lowq(
     let y_sum = b.alloc_qubits(h + 1);
     karatsuba_half_sum_compute_lowq(b, &x_lo, &x_hi, &x_sum);
     karatsuba_half_sum_compute_lowq(b, &y_lo, &y_hi, &y_sum);
-    schoolbook_mul_into_addsub_lowq_inverse(b, &x_sum, &y_sum, z1_reg);
+    schoolbook_mul_into_addsub_inverse(b, &x_sum, &y_sum, z1_reg);
     karatsuba_half_sum_uncompute_lowq(b, &y_lo, &y_hi, &y_sum);
     karatsuba_half_sum_uncompute_lowq(b, &x_lo, &x_hi, &x_sum);
     b.free_vec(&y_sum);
@@ -3106,11 +3116,11 @@ fn karatsuba_inverse_lowq(
 
     {
         let slice: Vec<QubitId> = tmp_ext[2 * h..4 * h].to_vec();
-        schoolbook_mul_into_addsub_lowq_inverse(b, &x_hi, &y_hi, &slice);
+        schoolbook_mul_into_addsub_inverse(b, &x_hi, &y_hi, &slice);
     }
     {
         let slice: Vec<QubitId> = tmp_ext[0..2 * h].to_vec();
-        schoolbook_mul_into_addsub_lowq_inverse(b, &x_lo, &y_lo, &slice);
+        schoolbook_mul_into_addsub_inverse(b, &x_lo, &y_lo, &slice);
     }
 }
 
@@ -3358,6 +3368,20 @@ fn pair1_mul1_write_into_zero_acc(
         mod_mul_write_into_zero_acc_karatsuba(b, acc, x, y, p);
     } else {
         mod_mul_write_into_zero_acc_schoolbook(b, acc, x, y, p);
+    }
+}
+
+fn pair1_mul2_add_into_acc(
+    b: &mut B,
+    acc: &[QubitId],
+    x: &[QubitId],
+    y: &[QubitId],
+    p: U256,
+) {
+    if pair1_mul2_karatsuba_enabled(acc.len()) {
+        mod_mul_add_into_acc_karatsuba_lowq(b, acc, x, y, p);
+    } else {
+        mod_mul_add_into_acc_schoolbook(b, acc, x, y, p);
     }
 }
 
@@ -9371,7 +9395,7 @@ fn build_standard_point_add(
                 mod_halve_inplace_fast(b, &lam_inner, p);
             }
             b.set_phase("pair1_mul2");
-            mod_mul_add_into_acc_schoolbook(b, &ty, &lam_inner, &tx, p);
+            pair1_mul2_add_into_acc(b, &ty, &lam_inner, &tx, p);
             if tagged_div_validate {
                 // lam_inner = -(lambda+1) after consuming tagged ty=(dy+dx).
                 // Add 1 to recover the normal lam_inner=-lambda expected by the
