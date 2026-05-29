@@ -175,42 +175,56 @@ fn secp256k1() -> WeierstrassEllipticCurve {
     }
 }
 
-// ─── Fiat-Shamir seed (matches old main.rs verbatim) ──────────────────────
+// ─── Fiat-Shamir seed ──────────────────────────────────────────────────────
+//
+// SHAKE256 over the op stream. Determines test inputs, simulator RNG for
+// R/Hmr phase randomization, etc.
 
 fn fiat_shamir_seed(ops: &[Op]) -> sha3::Shake256Reader {
-    // Hash low 4 bytes of each ID — matches the pre-upstream-import seed so
-    // the XOF stream is stable across the u32→u64 ID migration. Real circuits
-    // never use IDs above ~10M; this is purely a hash-stability measure.
     let mut hasher = Shake256::default();
-    hasher.update(b"quantum_ecc-fiat-shamir-v1");
+    hasher.update(b"quantum_ecc-fiat-shamir-v2");
     hasher.update(&(ops.len() as u64).to_le_bytes());
     for op in ops {
         hasher.update(&[op.kind as u8]);
-        hasher.update(&(op.q_control2.0 as u32).to_le_bytes());
-        hasher.update(&(op.q_control1.0 as u32).to_le_bytes());
-        hasher.update(&(op.q_target.0 as u32).to_le_bytes());
-        hasher.update(&(op.c_target.0 as u32).to_le_bytes());
-        hasher.update(&(op.c_condition.0 as u32).to_le_bytes());
-        hasher.update(&(op.r_target.0 as u32).to_le_bytes());
+        hasher.update(&op.q_control2.0.to_le_bytes());
+        hasher.update(&op.q_control1.0.to_le_bytes());
+        hasher.update(&op.q_target.0.to_le_bytes());
+        hasher.update(&op.c_target.0.to_le_bytes());
+        hasher.update(&op.c_condition.0.to_le_bytes());
+        hasher.update(&op.r_target.0.to_le_bytes());
     }
     hasher.finalize_xof()
 }
 
-// ─── Test runner (verbatim from old main.rs) ───────────────────────────────
+// ─── Test runner ──────────────────────────────────────────────────────────
+
+struct SeedReport {
+    ok: bool,
+    avg_cliff: f64,
+    avg_tof: f64,
+    tot_tof: u64,
+    tot_cliff: u64,
+    n_shots: usize,
+    classical_failures: usize,
+    phase_garbage_batches: usize,
+    ancilla_garbage_batches: usize,
+    fail_reason: Option<String>,
+}
 
 fn run_tests(
     ops: &[Op],
     layout_regs: &[Vec<QubitOrBit>],
     total_qubits: u64,
     num_bits: u64,
-) -> (bool, f64, f64, u64, u64, usize, Option<String>) {
+    mut xof: sha3::Shake256Reader,
+    target_shots: usize,
+) -> SeedReport {
     let curve = secp256k1();
-    let mut xof = fiat_shamir_seed(ops);
 
-    let mut targets = Vec::with_capacity(NUM_TESTS);
-    let mut offsets = Vec::with_capacity(NUM_TESTS);
-    let mut expected = Vec::with_capacity(NUM_TESTS);
-    for _ in 0..NUM_TESTS {
+    let mut targets = Vec::with_capacity(target_shots);
+    let mut offsets = Vec::with_capacity(target_shots);
+    let mut expected = Vec::with_capacity(target_shots);
+    for _ in 0..target_shots {
         let mut rb = [[0u8; 32]; 2];
         xof.read(&mut rb[0]);
         xof.read(&mut rb[1]);
@@ -317,24 +331,20 @@ fn run_tests(
         }
     }
 
-    println!("  tested shots            : {}", n);
-    println!("  classical mismatches    : {}", classical_failures);
-    println!("  phase-garbage batches   : {}", phase_garbage_batches);
-    println!("  ancilla-garbage batches : {}", ancilla_garbage_batches);
     let _ = num_bits;
-
     let denom = n.max(1) as f64;
-    let avg_cliff = sim.stats.clifford_gates as f64 / denom;
-    let avg_tof = sim.stats.toffoli_gates as f64 / denom;
-    (
+    SeedReport {
         ok,
-        avg_cliff,
-        avg_tof,
-        sim.stats.toffoli_gates,
-        sim.stats.clifford_gates,
-        n,
+        avg_cliff: sim.stats.clifford_gates as f64 / denom,
+        avg_tof: sim.stats.toffoli_gates as f64 / denom,
+        tot_tof: sim.stats.toffoli_gates,
+        tot_cliff: sim.stats.clifford_gates,
+        n_shots: n,
+        classical_failures,
+        phase_garbage_batches,
+        ancilla_garbage_batches,
         fail_reason,
-    )
+    }
 }
 
 // ─── Output bookkeeping ────────────────────────────────────────────────────
@@ -478,43 +488,42 @@ fn main() {
     println!("  qubits      : {}", total_qubits);
     println!("  bits        : {}", num_bits);
 
-    println!("\n-- running correctness tests --");
-    let (ok, avg_cliff, avg_tof, tot_tof, tot_cliff, n_shots, fail_reason) =
-        run_tests(&ops, &regs, total_qubits, num_bits);
-    if !ok {
-        println!("\n!! correctness FAILED");
-        if let Some(r) = &fail_reason {
-            println!("  first failure          : {}", r);
-        }
-        let fail_note = match &fail_reason {
-            Some(r) => format!("{note} | {r}"),
-            None => note.clone(),
-        };
+    println!("\n-- correctness tests ({} shots) --", NUM_TESTS);
+    let xof = fiat_shamir_seed(&ops);
+    let r = run_tests(&ops, &regs, total_qubits, num_bits, xof, NUM_TESTS);
+    println!("  tested shots            : {}", r.n_shots);
+    println!("  classical mismatches    : {}", r.classical_failures);
+    println!("  phase-garbage batches   : {}", r.phase_garbage_batches);
+    println!("  ancilla-garbage batches : {}", r.ancilla_garbage_batches);
+    if !r.ok {
+        let reason = r.fail_reason.clone().unwrap_or_else(|| "(no detail)".into());
+        println!("\n!! correctness FAILED: {reason}");
+        let fail_note = format!("{note} | {reason}");
         append_results_row(
             "FAIL",
-            avg_tof,
-            avg_cliff,
+            r.avg_tof,
+            r.avg_cliff,
             total_qubits,
             ops.len(),
             &fail_note,
         );
         std::process::exit(1);
     }
-    println!("  all {} shots OK", n_shots);
+    println!("  all {} shots OK", r.n_shots);
 
     println!("\n=== circuit metrics (secp256k1, n=256) ===");
-    println!("  avg executed Toffoli  : {:.3}", avg_tof);
-    println!("  avg executed Clifford : {:.3}", avg_cliff);
+    println!("  avg executed Toffoli  : {:.3}", r.avg_tof);
+    println!("  avg executed Clifford : {:.3}", r.avg_cliff);
     println!(
         "  total Toffoli (sum)   : {} over {} shots",
-        tot_tof, n_shots
+        r.tot_tof, r.n_shots
     );
-    println!("  total Clifford (sum)  : {}", tot_cliff);
+    println!("  total Clifford (sum)  : {}", r.tot_cliff);
     println!("  emitted ops           : {}", ops.len());
     println!("  qubits                : {}", total_qubits);
 
-    append_results_row("OK", avg_tof, avg_cliff, total_qubits, ops.len(), &note);
-    write_score(avg_tof, total_qubits);
+    append_results_row("OK", r.avg_tof, r.avg_cliff, total_qubits, ops.len(), &note);
+    write_score(r.avg_tof, total_qubits);
 
     println!("\n=== experiment OK ===");
 }
