@@ -8,6 +8,9 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
   SUDO="sudo"
 fi
 
+# shellcheck disable=SC1091
+. "$HOME/.cargo/env" 2>/dev/null || true
+
 find_c_compiler() {
   if [[ -n "${CC:-}" ]] && command -v "${CC}" >/dev/null 2>&1; then
     command -v "${CC}"
@@ -21,6 +24,35 @@ find_c_compiler() {
       return 0
     fi
   done
+
+  return 1
+}
+
+pinned_rust_channel() {
+  local channel=""
+  if [[ -f rust-toolchain ]]; then
+    channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain | sed -n '1p')"
+    if [[ -z "${channel}" ]]; then
+      channel="$(sed -n '1s/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' rust-toolchain)"
+    fi
+  fi
+  printf '%s\n' "${channel}"
+}
+
+installed_toolchain_for_channel() {
+  local channel="$1"
+  local line toolchain
+
+  [[ -n "${channel}" ]] || return 1
+  command -v rustup >/dev/null 2>&1 || return 1
+
+  while IFS= read -r line; do
+    toolchain="${line%% *}"
+    if [[ "${toolchain}" == "${channel}" || "${toolchain}" == "${channel}-"* ]]; then
+      printf '%s\n' "${toolchain}"
+      return 0
+    fi
+  done < <(rustup toolchain list 2>/dev/null)
 
   return 1
 }
@@ -93,3 +125,24 @@ if ! command -v cargo >/dev/null 2>&1; then
   echo "setup.sh: cargo is still not available after setup" >&2
   exit 1
 fi
+
+channel="$(pinned_rust_channel)"
+if [[ -n "${channel}" ]] && command -v rustup >/dev/null 2>&1; then
+  toolchain="$(installed_toolchain_for_channel "${channel}" || true)"
+  if [[ -z "${toolchain}" ]]; then
+    rustup toolchain install "${channel}" --profile minimal
+    toolchain="$(installed_toolchain_for_channel "${channel}" || true)"
+  fi
+
+  if [[ -z "${toolchain}" ]]; then
+    echo "setup.sh: failed to install Rust toolchain '${channel}'" >&2
+    exit 1
+  fi
+
+  export RUSTUP_TOOLCHAIN="${toolchain}"
+fi
+
+# 3. Populate the Cargo cache and prebuild the benchmark binaries. After this,
+#    benchmark.sh should not need network access.
+cargo fetch --locked
+RUSTFLAGS="-C linker=${compiler}" cargo build --release --locked --bin build_circuit --bin eval_circuit

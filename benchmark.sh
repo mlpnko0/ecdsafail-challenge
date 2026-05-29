@@ -17,6 +17,53 @@ set -euo pipefail
 # shellcheck disable=SC1091
 . "$HOME/.cargo/env" 2>/dev/null || true
 
+pinned_rust_channel() {
+  local channel=""
+  if [[ -f rust-toolchain ]]; then
+    channel="$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' rust-toolchain | sed -n '1p')"
+    if [[ -z "${channel}" ]]; then
+      channel="$(sed -n '1s/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*$/\1/p' rust-toolchain)"
+    fi
+  fi
+  printf '%s\n' "${channel}"
+}
+
+installed_toolchain_for_channel() {
+  local channel="$1"
+  local line toolchain
+
+  [[ -n "${channel}" ]] || return 1
+  command -v rustup >/dev/null 2>&1 || return 1
+
+  while IFS= read -r line; do
+    toolchain="${line%% *}"
+    if [[ "${toolchain}" == "${channel}" || "${toolchain}" == "${channel}-"* ]]; then
+      printf '%s\n' "${toolchain}"
+      return 0
+    fi
+  done < <(rustup toolchain list 2>/dev/null)
+
+  return 1
+}
+
+require_offline_rust_toolchain() {
+  if [[ -n "${RUSTUP_TOOLCHAIN:-}" ]] || ! command -v rustup >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local channel toolchain
+  channel="$(pinned_rust_channel)"
+  [[ -n "${channel}" ]] || return 0
+
+  toolchain="$(installed_toolchain_for_channel "${channel}" || true)"
+  if [[ -z "${toolchain}" ]]; then
+    echo "!! pinned Rust toolchain '${channel}' is not installed; run ./setup.sh before offline benchmarking" >&2
+    exit 1
+  fi
+
+  export RUSTUP_TOOLCHAIN="${toolchain}"
+}
+
 find_c_compiler() {
   if [[ -n "${CC:-}" ]] && command -v "${CC}" >/dev/null 2>&1; then
     command -v "${CC}"
@@ -40,12 +87,20 @@ if [[ -z "${compiler}" ]]; then
   exit 1
 fi
 export CC="${compiler}"
+require_offline_rust_toolchain
+
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "!! cargo not found; run ./setup.sh before offline benchmarking" >&2
+  exit 1
+fi
+
+export CARGO_NET_OFFLINE=true
 
 # 1. Clean slate.
 rm -f ops.bin score.json
 
 # Make sure both binaries are present (cheap rebuild — no-op if up to date).
-RUSTFLAGS="-C linker=${compiler}" cargo build --release --bin build_circuit --bin eval_circuit
+RUSTFLAGS="-C linker=${compiler}" cargo build --release --locked --offline --bin build_circuit --bin eval_circuit
 
 # 2. Run build_circuit in its own process group, then nuke the group.
 #    `setsid` puts it in a fresh pgid; `kill -KILL -<pgid>` reaches every
