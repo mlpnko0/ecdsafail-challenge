@@ -71,7 +71,12 @@ pub(crate) fn kal_wtrunc_enabled() -> bool {
 }
 
 pub(crate) fn kal_wtrunc_k0() -> usize {
-    env_usize("KAL_WTRUNC_K0").unwrap_or(27)
+    // Full-width prefix length for the W-TRUNC envelope. Lowered 27 -> 25: a
+    // full 9024-shot isolated eval confirms K0=25 is a clean validity island
+    // (0 mismatch / 0 phase) and shaves the W-TRUNC envelope by 2 more early
+    // iterations, saving 5,862 avg-executed Toffoli (2,842,943 -> 2,837,081)
+    // at peak-neutral 2309. K0=23 fails (2 mismatch), so 25 is the floor.
+    env_usize("KAL_WTRUNC_K0").unwrap_or(25)
 }
 
 pub(crate) fn kal_wtrunc_margin() -> usize {
