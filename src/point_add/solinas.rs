@@ -30,14 +30,15 @@ pub(crate) fn shift22_carrytail() -> bool {
 /// W=40 → 0/0/0, avg-exec 2,429,724. Note this is NOT a pure truncation-soundness
 /// floor — even W=223 (full chain, zero truncation) MISSES the Fiat-Shamir island
 /// (1 mismatch), because routing STEP-3/4 through the direct const adders re-rolls
-/// the test inputs; W=37 is the value that lands a 9024-clean island AND truncates.
-/// Single value, used identically forward and reverse (phase-parity).
-/// W∈{20,22,25,30,35,36,38,39,41,42,45,50,55,60,90,223} all MISS the island.
+/// the test inputs; W=35 is the value that lands a 9024-clean island AND truncates
+/// on the C* stack (dialog-fold + affine-recompute + early-recover, slack=3,
+/// R_SMALL=326). Single value, used identically forward and reverse (phase-parity).
+/// W=34 rejects the Fiat-Shamir island lottery (no clean reroll in 0-127).
 pub(crate) fn shift22_carrytail_cut() -> usize {
     let w = std::env::var("SHIFT22_CARRYTAIL_W")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(37);
+        .unwrap_or(35);
     33usize.saturating_add(w)
 }
 
