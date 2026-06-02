@@ -29673,7 +29673,10 @@ fn configure_ecdsafail_submission_route() {
     // Branch comparator width tightened 61 -> 59 (−1,600 executed Toffoli),
     // stacked on the chunked-apply + round763 + acc=19 base via the 2-D reroll
     // island (DIALOG_REROLL=0, DIALOG_POST_SUB_REROLL=10). Validated 0/0/0 @ 1567.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "58");
+    // On the partial-hosted 1446q surface, compare58 was the first clean frontier.
+    // compare57 is peak-neutral and saves 1,016 executed Toffoli; a 2-D reroll
+    // search lands on 3/118 clean 0/0/0 over all 9024 shots.
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "57");
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "19");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "398");
@@ -29780,10 +29783,10 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_BRANCH_BITS_HOST_COMPARATOR", "1");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "126");
     // Partial body-gated hosting plus F_CUT=126 drops the hosted-comparator
-    // route to the 1446q branch/apply co-binder. A 2-D reroll search lands
-    // 1/28 clean 0/0/0 over all 9024 shots at 1446q and 1,737,201 Toffoli.
-    set_default_env("DIALOG_REROLL", "1");
-    set_default_env("DIALOG_POST_SUB_REROLL", "28");
+    // route to the 1446q branch/apply co-binder. The compare57 route is clean
+    // on the 3/118 Fiat-Shamir island at 1446q and 1,736,185 Toffoli.
+    set_default_env("DIALOG_REROLL", "3");
+    set_default_env("DIALOG_POST_SUB_REROLL", "118");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
