@@ -31068,7 +31068,9 @@ fn configure_ecdsafail_submission_route() {
     // low/mid-width GCD steps (below the 57 cap) for -452 executed Toffoli,
     // peak-neutral at 1434q, orthogonal to compare57. The late-game lineage ran
     // margin=5; the base had reverted to 7. Clean island at REROLL=1844/POST_SUB=3532.
-    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "7");
+    // Margin 7 -> 6 stacked on the WIDTH_SLOPE=711 tightening: narrows the per-step
+    // comparator on low/mid-width GCD steps, orthogonal to the slope envelope.
+    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "6");
     set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "20");
     set_default_env("KAL_FOLD_CARRY_TRUNC_W", "20");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
@@ -31235,10 +31237,10 @@ fn configure_ecdsafail_submission_route() {
     // 1,779,067 -> 1,778,555 (-512), peak-neutral at 1355q. The tighter
     // truncation re-rolls the Fiat-Shamir island; a 1-D reroll sweep (post_sub
     // fixed at the inherited 503292) lands a clean island at DIALOG_REROLL=101019.
-    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "710");
+    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "711");
     // Active-396 island: compare_bits=58 + apply_clean=21 + schedule margin=8
     // validates 0/0/0 over all 9024 shots at 1438q x 1,736,773 T.
-    set_default_env("DIALOG_REROLL", "265503");
+    set_default_env("DIALOG_REROLL", "12027");
     set_default_env("DIALOG_POST_SUB_REROLL", "503292");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
