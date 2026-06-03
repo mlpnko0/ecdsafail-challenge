@@ -31225,9 +31225,20 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "56");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT2", "112");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT3", "168");
+    // WIDTH_SLOPE tightening: the per-step GCD width envelope shrink rate
+    // (ideal = N - step*SLOPE + MARGIN) was left at the default 0.7075 by the
+    // whole frontier lineage; only the constant MARGIN was ever tuned. The
+    // Bernstein-Yang/binary-GCD width bound (Gidney et al., arXiv:2510.10967,
+    // "after i iters 2*deg(b) <= 2d-1-i-delta") shows the realizable bitlen
+    // shrinks slightly faster, so SLOPE 707.5 -> 708 tightens every late-step
+    // GCD-body width by an extra fraction of a bit: avg executed Toffoli
+    // 1,779,067 -> 1,778,555 (-512), peak-neutral at 1355q. The tighter
+    // truncation re-rolls the Fiat-Shamir island; a 1-D reroll sweep (post_sub
+    // fixed at the inherited 503292) lands a clean island at DIALOG_REROLL=101019.
+    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "708");
     // Active-396 island: compare_bits=58 + apply_clean=21 + schedule margin=8
     // validates 0/0/0 over all 9024 shots at 1438q x 1,736,773 T.
-    set_default_env("DIALOG_REROLL", "291150");
+    set_default_env("DIALOG_REROLL", "101019");
     set_default_env("DIALOG_POST_SUB_REROLL", "503292");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
