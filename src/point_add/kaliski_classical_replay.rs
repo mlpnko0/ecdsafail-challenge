@@ -170,6 +170,80 @@ pub fn kaliski_run(
     (m_hist, snapshots)
 }
 
+/// K=2 bounded-shift variant of `kaliski_iter_classical`: identical step, plus a
+/// CONDITIONAL second (shift v_w >> 1, r := 2r mod p) when the working v_w is
+/// still even (and nonzero) after the unconditional shift. Returns (m_i, shift2)
+/// where shift2=1 iff the second shift fired (the new transcript bit a K=2
+/// circuit must record for reversibility). Bezout bookkeeping is preserved: each
+/// shift pairs with one r-doubling exactly as the base step does.
+pub fn kaliski_iter_classical_k2(
+    u: &mut U256,
+    v_w: &mut U256,
+    r: &mut U256,
+    s: &mut U256,
+    f: &mut u8,
+    p: U256,
+) -> (u8, u8) {
+    // STEP 0
+    let is_zero = if *v_w == U256::ZERO { 1u8 } else { 0 };
+    let mut m_i: u8 = 0;
+    if *f == 1 && is_zero == 1 {
+        m_i ^= 1;
+    }
+    *f ^= m_i;
+    // STEP 1
+    let u0 = (u.as_limbs()[0] & 1) as u8;
+    let v0 = (v_w.as_limbs()[0] & 1) as u8;
+    let mut a_f: u8 = 0;
+    if *f == 1 && u0 == 0 {
+        a_f ^= 1;
+    }
+    if *f == 1 && u0 == 1 && v0 == 0 {
+        m_i ^= 1;
+    }
+    let b_f = a_f ^ m_i;
+    // STEP 2
+    let l_gt = if *u > *v_w { 1u8 } else { 0 };
+    let add_f_step2 = (*f & l_gt) as u8;
+    let b_not = 1 ^ b_f;
+    let delta = add_f_step2 & b_not;
+    a_f ^= delta;
+    m_i ^= delta;
+    // STEP 3
+    if a_f == 1 {
+        std::mem::swap(u, v_w);
+        std::mem::swap(r, s);
+    }
+    // STEP 4
+    let add_f_step4 = *f & (1 ^ b_f);
+    if add_f_step4 == 1 {
+        *v_w = v_w.wrapping_sub(*u);
+        *s = s.wrapping_add(*r);
+    }
+    // STEP 6: v_w >>= 1
+    *v_w = *v_w >> 1;
+    // STEP 7+8: r := 2r mod p
+    let r2 = r.wrapping_add(*r);
+    *r = if r2 >= p || r2 < *r { r2.wrapping_sub(p) } else { r2 };
+    // K2: conditional second shift while still converging.
+    let shift2 = if *f == 1 && (v_w.as_limbs()[0] & 1) == 0 && *v_w != U256::ZERO {
+        1u8
+    } else {
+        0u8
+    };
+    if shift2 == 1 {
+        *v_w = *v_w >> 1;
+        let r2b = r.wrapping_add(*r);
+        *r = if r2b >= p || r2b < *r { r2b.wrapping_sub(p) } else { r2b };
+    }
+    // STEP 9: swap back
+    if a_f == 1 {
+        std::mem::swap(u, v_w);
+        std::mem::swap(r, s);
+    }
+    (m_i, shift2)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FingerprintConflictSummary {
     pub n_inputs: usize,

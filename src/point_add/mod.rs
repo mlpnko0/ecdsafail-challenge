@@ -155,6 +155,11 @@ struct B {
     pub current_phase_active_max: u32,
     // (ops_len_at_transition, new_phase)
     pub phase_transitions: Vec<(usize, &'static str)>,
+    // K=2 prototype: per-step "shifted twice" transcript bits, indexed by global
+    // GCD step. Set by the ipmul/quotient wrappers around a pass; read by the
+    // tobitvector (compute/uncompute) and apply (conditional 2nd double/halve).
+    // Empty when K=2 is disabled (frontier path byte-identical).
+    pub k2_shift2_log: Vec<QubitId>,
 }
 
 #[derive(Clone, Copy)]
@@ -262,6 +267,7 @@ impl B {
             phase_active_regions: Vec::new(),
             current_phase_active_max: 0,
             phase_transitions: Vec::new(),
+            k2_shift2_log: Vec::new(),
         }
     }
     fn new_count_only() -> Self {
@@ -3628,6 +3634,55 @@ fn mod_halve_inplace_fast_with_dirty(
 fn mod_halve_inplace(b: &mut B, v: &[QubitId], p: U256) {
     let v_copy: Vec<QubitId> = v.to_vec();
     emit_inverse(b, move |b| mod_double_inplace(b, &v_copy, p));
+}
+
+/// Controlled lazy mod-double: EXACT controlled form of `mod_double_inplace_fast`
+/// (Solinas reduction, lazy [0,2^n) coset rep, same carry-trunc window). Identity
+/// when ctrl=0. Used by the K=2 prototype's conditional 2nd double so it composes
+/// correctly with the uncontrolled `mod_double_inplace_fast` in the apply.
+fn cmod_double_inplace_lazy(b: &mut B, v: &[QubitId], p: U256, ctrl: QubitId) {
+    let n = v.len();
+    let ovf = b.alloc_qubit();
+    cswap(b, ctrl, v[n - 1], ovf);
+    for i in (0..n - 1).rev() {
+        cswap(b, ctrl, v[i], v[i + 1]);
+    }
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+    if let Some(w) = double_carry_trunc_window() {
+        cadd_nbit_const_direct_trunc_fast(b, v, c, ovf, w);
+    } else if direct_const_walks_enabled()
+        || std::env::var("KAL_DIRECT_CONST_DOUBLE").ok().as_deref() == Some("1")
+    {
+        cadd_nbit_const_direct_fast(b, v, c, ovf);
+    } else {
+        cadd_nbit_const_fast(b, v, c, ovf);
+    }
+    // Clear ovf: result parity == old top bit == ovf (gated by ctrl).
+    b.ccx(ctrl, v[0], ovf);
+    b.free(ovf);
+}
+
+/// Controlled lazy mod-halve: EXACT controlled form of `mod_halve_inplace_fast`
+/// (inverse of `cmod_double_inplace_lazy`, same window). Identity when ctrl=0.
+fn cmod_halve_inplace_lazy(b: &mut B, v: &[QubitId], p: U256, ctrl: QubitId) {
+    let n = v.len();
+    let ovf = b.alloc_qubit();
+    let c = U256::MAX.wrapping_sub(p).wrapping_add(U256::from(1));
+    b.ccx(ctrl, v[0], ovf);
+    if let Some(w) = double_carry_trunc_window() {
+        csub_nbit_const_direct_trunc_fast(b, v, c, ovf, w);
+    } else if direct_const_walks_enabled()
+        || std::env::var("KAL_DIRECT_CONST_HALVE").ok().as_deref() == Some("1")
+    {
+        csub_nbit_const_direct_fast(b, v, c, ovf);
+    } else {
+        csub_nbit_const_fast(b, v, c, ovf);
+    }
+    for i in 0..n - 1 {
+        cswap(b, ctrl, v[i], v[i + 1]);
+    }
+    cswap(b, ctrl, v[n - 1], ovf);
+    b.free(ovf);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -24220,6 +24275,38 @@ fn dialog_gcd_compressed_block_lifecycle_enabled() -> bool {
         .as_deref()
         == Some("1")
 }
+
+/// K=2 bounded-shift GCD prototype. When enabled, each tobitvector step strips up
+/// to TWO trailing zeros (one extra conditional shift), recording the shift2 bit
+/// in `b.k2_shift2_log[step]`; the apply mirrors it with a conditional 2nd
+/// double/halve of y. Prototype stores shift2 UNCOMPRESSED (separate register) so
+/// it does not touch the round763 packer yet. Default OFF -> frontier byte-identical.
+fn dialog_gcd_k2_enabled() -> bool {
+    std::env::var("DIALOG_GCD_K2").ok().as_deref() == Some("1")
+}
+
+/// Compressed bits per transcript block. K=2 packs an extra `shift2` bit per step
+/// (GROUP_SIZE=3 steps) on top of the round763 6->5 base packing: 5 + 3 = 8.
+/// NOTE: the compile-time `DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS` const stays 5
+/// (it sizes fixed arrays in the high-tail machinery); this fn is for the dynamic
+/// compressed_log stride / indexing / runway only.
+fn dialog_gcd_block_bits() -> usize {
+    if dialog_gcd_k2_enabled() {
+        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS + DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE
+    } else {
+        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
+    }
+}
+
+/// Raw (uncompressed) per-block scratch length: 2 bits/step base, +1/step for K=2
+/// shift2. K1: 2*GROUP_SIZE=6; K2: 3*GROUP_SIZE=9.
+fn dialog_gcd_raw_block_len() -> usize {
+    if dialog_gcd_k2_enabled() {
+        3 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE
+    } else {
+        2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE
+    }
+}
 pub const DIALOG_GCD_PA9024_COMPARE_SCHEDULE: [usize; 399] = [
     12, 15, 14, 15, 13, 21, 18, 19, 17, 18, 17, 20, 19, 20, 22, 23, 27, 24, 24, 25, 29, 27, 27, 27,
     29, 30, 31, 30, 34, 33, 34, 32, 37, 41, 39, 39, 38, 40, 44, 39, 44, 41, 44, 47, 44, 47, 48, 48,
@@ -24477,28 +24564,11 @@ fn dialog_gcd_round762_active_width(step: usize) -> usize {
 /// exactly like the global WIDTH_MARGIN — but applied to the sub/add ONLY,
 /// leaving the cswap and comparator at full active_width. Returns the truncated
 /// body width, clamped to >= 2.
-fn dialog_gcd_body_carry_band_trim(step: usize) -> Option<usize> {
-    let s = std::env::var("DIALOG_GCD_BODY_CARRY_BAND_TRIMS").ok()?;
-    if s.is_empty() {
-        return None;
-    }
-    let trims: Vec<usize> = s.split(',').filter_map(|x| x.trim().parse().ok()).collect();
-    if trims.is_empty() {
-        return None;
-    }
-    let iters = dialog_gcd_active_iterations().max(1);
-    let band_size = ((iters + trims.len() - 1) / trims.len()).max(1);
-    let band = (step / band_size).min(trims.len() - 1);
-    Some(trims[band])
-}
-
-fn dialog_gcd_body_carry_trunc_width(active_width: usize, step: usize) -> usize {
-    let w = dialog_gcd_body_carry_band_trim(step).unwrap_or_else(|| {
-        std::env::var("DIALOG_GCD_BODY_CARRY_TRUNC_W")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0)
-    });
+fn dialog_gcd_body_carry_trunc_width(active_width: usize) -> usize {
+    let w = std::env::var("DIALOG_GCD_BODY_CARRY_TRUNC_W")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
     active_width.saturating_sub(w).max(2)
 }
 
@@ -24734,7 +24804,6 @@ fn dialog_gcd_controlled_sub_selected(
     acc: &[QubitId],
     ctrl: QubitId,
     borrowed_carries: Option<&[QubitId]>,
-    step: usize,
 ) {
     assert_eq!(subtrahend.len(), acc.len());
     assert!(!subtrahend.is_empty());
@@ -24761,7 +24830,7 @@ fn dialog_gcd_controlled_sub_selected(
                 gated_owned.as_slice()
             }
         };
-        let body_w = dialog_gcd_body_carry_trunc_width(n, step);
+        let body_w = dialog_gcd_body_carry_trunc_width(n);
         let odd_lowbit_fast = dialog_gcd_odd_u_lowbit_fastpath_enabled();
         let body_start = if odd_lowbit_fast { 1 } else { 0 };
         b.set_phase("dialog_gcd_raw_tobitvector_materialized_sub_load");
@@ -24821,7 +24890,6 @@ fn dialog_gcd_controlled_add_selected(
     acc: &[QubitId],
     ctrl: QubitId,
     borrowed_carries: Option<&[QubitId]>,
-    step: usize,
 ) {
     assert_eq!(addend.len(), acc.len());
     assert!(!addend.is_empty());
@@ -24846,7 +24914,7 @@ fn dialog_gcd_controlled_add_selected(
                 gated_owned.as_slice()
             }
         };
-        let body_w = dialog_gcd_body_carry_trunc_width(n, step);
+        let body_w = dialog_gcd_body_carry_trunc_width(n);
         let odd_lowbit_fast = dialog_gcd_odd_u_lowbit_fastpath_enabled();
         let body_start = if odd_lowbit_fast { 1 } else { 0 };
         b.set_phase("dialog_gcd_raw_tobitvector_materialized_add_load");
@@ -24968,7 +25036,7 @@ fn emit_dialog_gcd_raw_tobitvector_steps(
 
         b.set_phase("dialog_gcd_raw_tobitvector_subtract");
         let borrowed_carries = dialog_gcd_future_log_carry_slice(dialog_log, step, active_width);
-        dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries, step);
+        dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries);
 
         b.set_phase("dialog_gcd_raw_tobitvector_shift");
         dialog_gcd_shift_right_assuming_even(b, v_active);
@@ -24999,7 +25067,7 @@ fn emit_dialog_gcd_raw_tobitvector_steps_reverse(
 
         b.set_phase("dialog_gcd_raw_tobitvector_reverse_add");
         let borrowed_carries = dialog_gcd_future_log_carry_slice(dialog_log, step, active_width);
-        dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries, step);
+        dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries);
 
         b.set_phase("dialog_gcd_raw_tobitvector_reverse_cswap");
         for (i, (&ui, &vi)) in u_active.iter().zip(v_active.iter()).enumerate() {
@@ -26104,13 +26172,14 @@ fn dialog_gcd_compressed_sidecar_blocks() -> usize {
 }
 
 fn dialog_gcd_compressed_sidecar_bits() -> usize {
-    dialog_gcd_compressed_sidecar_blocks() * DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
+    dialog_gcd_compressed_sidecar_blocks() * dialog_gcd_block_bits()
 }
 
 fn dialog_gcd_compressed_sidecar_block(compressed_log: &[QubitId], step: usize) -> &[QubitId] {
     let block = step / DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE;
-    let start = block * DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS;
-    &compressed_log[start..start + DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS]
+    let bb = dialog_gcd_block_bits();
+    let start = block * bb;
+    &compressed_log[start..start + bb]
 }
 
 fn dialog_gcd_compressed_log_u_high_runway_enabled() -> bool {
@@ -26126,6 +26195,8 @@ fn dialog_gcd_compressed_log_u_high_runway_enabled() -> bool {
     // same terminal convergence and width envelope as terminal reuse and
     // variable-width tobitvector.  Default OFF keeps the accepted route
     // byte-identical.
+    // K=2: runway layout is now block_bits()-aware (8-bit stride), so it is safe
+    // to host the wider K2 transcript blocks on u-high — this is the peak lever.
     std::env::var("DIALOG_GCD_COMPRESSED_LOG_U_HIGH_RUNWAY")
         .ok()
         .as_deref()
@@ -26173,9 +26244,8 @@ fn dialog_gcd_runway_layout() -> Vec<(usize, usize)> {
     let first_allowed = blocks.saturating_sub(dialog_gcd_compressed_log_u_high_runway_blocks());
     for first_block in first_allowed..blocks {
         let mut next_host = highest_host;
-        let mut layout = Vec::with_capacity(
-            (blocks - first_block) * DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS,
-        );
+        let bb = dialog_gcd_block_bits();
+        let mut layout = Vec::with_capacity((blocks - first_block) * bb);
         let mut fits = true;
         for block in first_block..blocks {
             let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
@@ -26183,15 +26253,12 @@ fn dialog_gcd_runway_layout() -> Vec<(usize, usize)> {
                 .map(dialog_gcd_tobitvector_active_width)
                 .max()
                 .unwrap_or(1);
-            for slot in 0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS {
+            for slot in 0..bb {
                 if next_host < active_threshold {
                     fits = false;
                     break;
                 }
-                layout.push((
-                    block * DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS + slot,
-                    next_host,
-                ));
+                layout.push((block * bb + slot, next_host));
                 let Some(next) = next_host.checked_sub(1) else {
                     fits = false;
                     break;
@@ -26373,6 +26440,11 @@ fn dialog_gcd_pick_runway_safe_borrow_slice<'a>(
 }
 
 fn dialog_gcd_host_reverse_raw_block_enabled() -> bool {
+    // K=2 packer bring-up: disable raw-block hosting (the raw_block is wider, 9 vs
+    // 6, and the hosts assume 6). Allocate raw_block fresh; re-enable K2-aware later.
+    if dialog_gcd_k2_enabled() {
+        return false;
+    }
     std::env::var("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK")
         .ok()
         .as_deref()
@@ -26476,7 +26548,7 @@ fn dialog_gcd_compressed_sidecar_future_carry_slice(
         carry_need
     };
     let next_block = step / DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE + 1;
-    let start = next_block * DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS;
+    let start = next_block * dialog_gcd_block_bits();
     compressed_log
         .get(start..)
         .filter(|future| future.len() >= carry_need)
@@ -26494,30 +26566,48 @@ fn dialog_gcd_copy_compressed_block_to_raw(
     compressed_block: &[QubitId],
     raw_block: &[QubitId],
 ) {
-    assert_eq!(
-        compressed_block.len(),
-        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
-    );
-    assert_eq!(raw_block.len(), 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE);
-    for i in 0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS {
-        if dialog_gcd_apply_replay_swap_host_enabled() {
+    let base_bits = DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS; // 5
+    let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE; // 6
+    assert_eq!(compressed_block.len(), dialog_gcd_block_bits());
+    assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
+    let swap_host = dialog_gcd_apply_replay_swap_host_enabled();
+    for i in 0..base_bits {
+        if swap_host {
             b.swap(compressed_block[i], raw_block[i]);
         } else {
             b.cx(compressed_block[i], raw_block[i]);
         }
     }
-    emit_dialog_gcd_round763_compressor_inverse(b, raw_block);
+    emit_dialog_gcd_round763_compressor_inverse(b, &raw_block[0..raw_base]);
+    // K=2 shift2 tail: compressed[5..] -> raw[6..] (raw, no compression).
+    for j in base_bits..dialog_gcd_block_bits() {
+        let r = raw_base + (j - base_bits);
+        if swap_host {
+            b.swap(compressed_block[j], raw_block[r]);
+        } else {
+            b.cx(compressed_block[j], raw_block[r]);
+        }
+    }
 }
 
 fn dialog_gcd_clear_raw_block_copy(b: &mut B, compressed_block: &[QubitId], raw_block: &[QubitId]) {
-    assert_eq!(
-        compressed_block.len(),
-        DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS
-    );
-    assert_eq!(raw_block.len(), 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE);
-    emit_dialog_gcd_round763_compressor(b, raw_block);
-    for i in 0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS {
-        if dialog_gcd_apply_replay_swap_host_enabled() {
+    let base_bits = DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS;
+    let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE;
+    assert_eq!(compressed_block.len(), dialog_gcd_block_bits());
+    assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
+    let swap_host = dialog_gcd_apply_replay_swap_host_enabled();
+    // Inverse of copy: clear the shift2 tail first, then recompress the base.
+    for j in base_bits..dialog_gcd_block_bits() {
+        let r = raw_base + (j - base_bits);
+        if swap_host {
+            b.swap(compressed_block[j], raw_block[r]);
+        } else {
+            b.cx(compressed_block[j], raw_block[r]);
+        }
+    }
+    emit_dialog_gcd_round763_compressor(b, &raw_block[0..raw_base]);
+    for i in 0..base_bits {
+        if swap_host {
             b.swap(compressed_block[i], raw_block[i]);
         } else {
             b.cx(compressed_block[i], raw_block[i]);
@@ -26535,7 +26625,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecycle(
     assert_eq!(u.len(), N);
     assert_eq!(v.len(), N);
     assert!(
-        raw_block.is_empty() || raw_block.len() == 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE
+        raw_block.is_empty() || raw_block.len() == dialog_gcd_raw_block_len()
     );
     assert!(compressed_log.len() >= dialog_gcd_compressed_sidecar_bits());
 
@@ -26543,7 +26633,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecycle(
         let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
         let hosted_raw_block = dialog_gcd_forward_raw_block_host(u, compressed_log, block);
         let owned_raw_block = if dialog_gcd_host_reverse_raw_block_enabled() && hosted_raw_block.is_none() {
-            b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+            b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
         };
@@ -26634,17 +26724,35 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecycle(
             }
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_subtract");
-            dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries, step);
+            dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_shift");
             dialog_gcd_shift_right_assuming_even(b, v_active);
+            if dialog_gcd_k2_enabled() {
+                // K=2: record shift2 = NOT v_active[0] (v still even after the
+                // first shift) into the sidecar, then conditionally shift v_active
+                // right once more. Free 1-bit shift is a relabel; this 2nd shift is
+                // data-dependent (cswap cascade), ~aw CCX.
+                let s2 = raw_block[2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE + slot];
+                let v0 = v_active[0];
+                if std::env::var("DIALOG_GCD_K2_FORCE0").ok().as_deref() != Some("1") {
+                    b.cx(v0, s2);
+                    b.x(s2);
+                }
+                for i in 0..v_active.len().saturating_sub(1) {
+                    let (lo, hi) = (v_active[i], v_active[i + 1]);
+                    cswap(b, s2, lo, hi);
+                }
+            }
             if let Some(scratch) = composite_scratch {
                 b.free_vec(&scratch.owned);
             }
         }
 
         b.set_phase("dialog_gcd_compressed_block_tobitvector_compress_block");
-        emit_dialog_gcd_round763_compressor(b, raw_block);
+        let base_bits = DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS; // 5
+        let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE; // 6
+        emit_dialog_gcd_round763_compressor(b, &raw_block[0..raw_base]);
         let compressed_block = dialog_gcd_compressed_sidecar_block(compressed_log, start);
         if dialog_gcd_compressed_log_u_high_runway_enabled() {
             // A parked forward block is first written only after its high-u
@@ -26657,8 +26765,12 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecycle(
                 "compressed-log runway overlaps active forward u prefix at block {block}"
             );
         }
-        for i in 0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS {
+        for i in 0..base_bits {
             b.swap(raw_block[i], compressed_block[i]);
+        }
+        // K=2: stash the 3 raw shift2 bits raw[6..] into compressed_block[5..].
+        for j in base_bits..dialog_gcd_block_bits() {
+            b.swap(raw_block[raw_base + (j - base_bits)], compressed_block[j]);
         }
         if !owned_raw_block.is_empty() {
             b.free_vec(&owned_raw_block);
@@ -26676,7 +26788,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
     assert_eq!(u.len(), N);
     assert_eq!(v.len(), N);
     assert!(
-        raw_block.is_empty() || raw_block.len() == 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE
+        raw_block.is_empty() || raw_block.len() == dialog_gcd_raw_block_len()
     );
     assert!(compressed_log.len() >= dialog_gcd_compressed_sidecar_bits());
 
@@ -26685,7 +26797,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
         let compressed_block = dialog_gcd_compressed_sidecar_block(compressed_log, start);
         let hosted_raw_block = dialog_gcd_reverse_raw_block_host(u, compressed_log, block);
         let owned_raw_block = if dialog_gcd_host_reverse_raw_block_enabled() && hosted_raw_block.is_none() {
-            b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+            b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
         };
@@ -26709,10 +26821,18 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
                 "compressed-log runway overlaps active reverse u prefix at block {block}"
             );
         }
-        for i in 0..DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS {
-            b.swap(compressed_block[i], raw_block[i]);
+        {
+            let base_bits = DIALOG_GCD_HIGH_TAIL_ALIAS_BLOCK_BITS; // 5
+            let raw_base = 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE; // 6
+            for i in 0..base_bits {
+                b.swap(compressed_block[i], raw_block[i]);
+            }
+            emit_dialog_gcd_round763_compressor_inverse(b, &raw_block[0..raw_base]);
+            // K=2: bring the 3 shift2 bits compressed[5..] -> raw[6..].
+            for j in base_bits..dialog_gcd_block_bits() {
+                b.swap(compressed_block[j], raw_block[raw_base + (j - base_bits)]);
+            }
         }
-        emit_dialog_gcd_round763_compressor_inverse(b, raw_block);
 
         for step in (start..end).rev() {
             let slot = step - start;
@@ -26724,6 +26844,21 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
             let compare_bits = dialog_gcd_compare_bits_for_step(step, active_width);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_reverse_unshift");
+            if dialog_gcd_k2_enabled() {
+                // mirror of forward K=2: conditional un-shift (reverse cswap order),
+                // then uncompute s2 back to |0> (v_active[0] is restored after the
+                // un-shift to the value s2 was derived from).
+                let s2 = raw_block[2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE + slot];
+                for i in (0..v_active.len().saturating_sub(1)).rev() {
+                    let (lo, hi) = (v_active[i], v_active[i + 1]);
+                    cswap(b, s2, lo, hi);
+                }
+                let v0 = v_active[0];
+                if std::env::var("DIALOG_GCD_K2_FORCE0").ok().as_deref() != Some("1") {
+                    b.x(s2);
+                    b.cx(v0, s2);
+                }
+            }
             dialog_gcd_unshift_right_assuming_even(b, v_active);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_reverse_add");
@@ -26747,7 +26882,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block_lifecycle(
                 || dialog_gcd_pick_runway_safe_borrow_slice(future, u, compressed_log, active_width),
                 |scratch| Some(scratch.lanes.as_slice()),
             );
-            dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries, step);
+            dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_reverse_cswap");
             for (i, (&ui, &vi)) in u_active.iter().zip(v_active.iter()).enumerate() {
@@ -26813,7 +26948,7 @@ fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle(
 ) {
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
-    assert_eq!(raw_block.len(), 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE);
+    assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
 
     for block in (0..dialog_gcd_compressed_sidecar_blocks()).rev() {
         let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
@@ -26834,6 +26969,13 @@ fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_block_lifecycle(
 
             b.set_phase("dialog_gcd_compressed_block_apply_double_y");
             mod_double_inplace_fast(b, y, p);
+            if dialog_gcd_k2_enabled() && std::env::var("DIALOG_GCD_K2_NO_APPLY").ok().as_deref() != Some("1") {
+                // mirror the forward K=2 second shift: conditional 2nd double of y.
+                // MUST use the lazy (Solinas, truncated) controlled double so it
+                // composes with the uncontrolled mod_double_inplace_fast above.
+                let s2 = raw_block[2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE + slot];
+                cmod_double_inplace_lazy(b, y, p, s2);
+            }
 
             b.set_phase("dialog_gcd_compressed_block_apply_cadd");
             if dialog_gcd_raw_apply_materialized_special_add_enabled() {
@@ -26872,7 +27014,7 @@ fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_block_lifecy
 ) {
     assert_eq!(x.len(), N);
     assert_eq!(y.len(), N);
-    assert_eq!(raw_block.len(), 2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE);
+    assert_eq!(raw_block.len(), dialog_gcd_raw_block_len());
 
     for block in 0..dialog_gcd_compressed_sidecar_blocks() {
         let (start, end) = dialog_gcd_compressed_sidecar_block_step_range(block);
@@ -26914,6 +27056,12 @@ fn emit_dialog_gcd_compressed_sidecar_apply_bitvector_reverse_exact_block_lifecy
 
             b.set_phase("dialog_gcd_compressed_block_apply_reverse_halve_y");
             mod_halve_inplace_fast(b, y, p);
+            if dialog_gcd_k2_enabled() && std::env::var("DIALOG_GCD_K2_NO_APPLY").ok().as_deref() != Some("1") {
+                // mirror the forward K=2 second shift: conditional 2nd halve of y.
+                // MUST use the lazy (Solinas, truncated) controlled halve to match.
+                let s2 = raw_block[2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE + slot];
+                cmod_halve_inplace_lazy(b, y, p, s2);
+            }
         }
 
         b.set_phase("dialog_gcd_compressed_block_apply_reverse_clear_block_copy");
@@ -26972,7 +27120,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps(
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_subtract");
         let borrowed_carries =
             dialog_gcd_compressed_sidecar_future_carry_slice(compressed_log, step, active_width);
-        dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries, step);
+        dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_shift");
         dialog_gcd_shift_right_assuming_even(b, v_active);
@@ -27027,7 +27175,7 @@ fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse(
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_reverse_add");
         let borrowed_carries =
             dialog_gcd_compressed_sidecar_future_carry_slice(compressed_log, step, active_width);
-        dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries, step);
+        dialog_gcd_controlled_add_selected(b, u_active, v_active, b0, borrowed_carries);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_reverse_cswap");
         for (i, (&ui, &vi)) in u_active.iter().zip(v_active.iter()).enumerate() {
@@ -27182,7 +27330,7 @@ fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
     let raw_block = if dialog_gcd_host_reverse_raw_block_enabled() {
         Vec::new()
     } else {
-        b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+        b.alloc_qubits(dialog_gcd_raw_block_len())
     };
     let u = b.alloc_qubits(N);
     let runway = dialog_gcd_build_compressed_log_u_high_runway(&u, &compressed_log);
@@ -27212,7 +27360,7 @@ fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
 
         b.set_phase("dialog_gcd_compressed_block_ipmul_apply_bitvector_reuse_factor_zero");
         let apply_raw_block = if dialog_gcd_host_reverse_raw_block_enabled() {
-            b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+            b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
         };
@@ -27262,6 +27410,10 @@ fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
                 b.x(u[i]);
             }
         }
+        if !b.k2_shift2_log.is_empty() {
+            let log = std::mem::take(&mut b.k2_shift2_log);
+            b.free_vec(&log);
+        }
         b.free_vec(&u);
         if !raw_block.is_empty() {
             b.free_vec(&raw_block);
@@ -27303,6 +27455,10 @@ fn emit_dialog_gcd_compressed_sidecar_ipmul_block_lifecycle(
         if bit(p, i) {
             b.x(u[i]);
         }
+    }
+    if !b.k2_shift2_log.is_empty() {
+        let log = std::mem::take(&mut b.k2_shift2_log);
+        b.free_vec(&log);
     }
     b.free_vec(&u);
     b.free_vec(&raw_block);
@@ -27457,7 +27613,7 @@ fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
     let raw_block = if dialog_gcd_host_reverse_raw_block_enabled() {
         Vec::new()
     } else {
-        b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+        b.alloc_qubits(dialog_gcd_raw_block_len())
     };
     let u = b.alloc_qubits(N);
     let runway = dialog_gcd_build_compressed_log_u_high_runway(&u, &compressed_log);
@@ -27487,7 +27643,7 @@ fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
 
         b.set_phase("dialog_gcd_compressed_block_quotient_apply_reverse_reuse_factor_zero");
         let apply_raw_block = if dialog_gcd_host_reverse_raw_block_enabled() {
-            b.alloc_qubits(2 * DIALOG_GCD_HIGH_TAIL_ALIAS_GROUP_SIZE)
+            b.alloc_qubits(dialog_gcd_raw_block_len())
         } else {
             Vec::new()
         };
@@ -27528,6 +27684,10 @@ fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
                 b.x(u[i]);
             }
         }
+        if !b.k2_shift2_log.is_empty() {
+            let log = std::mem::take(&mut b.k2_shift2_log);
+            b.free_vec(&log);
+        }
         b.free_vec(&u);
         if !raw_block.is_empty() {
             b.free_vec(&raw_block);
@@ -27560,6 +27720,10 @@ fn emit_dialog_gcd_compressed_sidecar_quotient_block_lifecycle(
         if bit(p, i) {
             b.x(u[i]);
         }
+    }
+    if !b.k2_shift2_log.is_empty() {
+        let log = std::mem::take(&mut b.k2_shift2_log);
+        b.free_vec(&log);
     }
     b.free_vec(&u);
     b.free_vec(&raw_block);
@@ -31079,7 +31243,7 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("DIALOG_GCD_APPLY_REPLAY_SWAP_HOST", "1");
     set_default_env("SQUARE_SELFHOST_SAFE_LANE_REUSE", "1");
     set_default_env("SQUARE_SELFHOST_GATE_SUFFIX_CARRIES", "1");
-    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE", "1");
+    set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE", "0");
     // PA9024 compare-schedule margin retuned with ACTIVE_ITERATIONS=396 and
     // APPLY_CLEAN_COMPARE_BITS=21. The wider margin gives back a little Toffoli
     // but lands the 1438q clean island at DIALOG_REROLL=3 / POST_SUB=51 below.
@@ -31090,8 +31254,8 @@ fn configure_ecdsafail_submission_route() {
     // Margin 7 -> 6 stacked on the WIDTH_SLOPE=711 tightening: narrows the per-step
     // comparator on low/mid-width GCD steps, orthogonal to the slope envelope.
     set_default_env("DIALOG_GCD_PA9024_COMPARE_SCHEDULE_MARGIN", "6");
-    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "20");
-    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "20");
+    set_default_env("KAL_DOUBLE_CARRY_TRUNC_W", "24");
+    set_default_env("KAL_FOLD_CARRY_TRUNC_W", "24");
     set_default_env("DIALOG_GCD_ROUND763_DEDUP", "1");
     set_default_env("DIALOG_GCD_ROUND763_COMPRESS_LEVER", "1");
     set_default_env("DIALOG_GCD_MEASURED_UNDERFLOW_GATE", "1");
@@ -31106,16 +31270,17 @@ fn configure_ecdsafail_submission_route() {
     // island documented below.
     // Branch comparator 58 -> 57: -1,064 executed Toffoli, peak-neutral at 1434q,
     // stacked on the active395 base. Clean island at REROLL=4959 / POST_SUB=5983.
-    set_default_env("DIALOG_GCD_COMPARE_BITS", "56");
+    set_default_env("DIALOG_GCD_COMPARE_BITS", "74");
     // Apply-phase cmod-correction comparator tightened 20 -> 19 (-790 executed
     // Toffoli, peak-neutral at 1434q) -- an orthogonal value-exact lever the
     // frontier had dropped, stacked on compare57+active395. Clean island below.
     set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "20");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
+    set_default_env("DIALOG_GCD_K2", "1");
     // 396 -> 395 -> 394 on the current 1355q route. The binary-GCD transcript
     // still converges on the verifier support for the Fiat-Shamir island below,
     // while dropping two full GCD body/reverse steps.
-    set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "393");
+    set_default_env("DIALOG_GCD_ACTIVE_ITERATIONS", "259");
     set_default_env("DIALOG_GCD_RAW_IPMUL_TERMINAL_REUSE", "1");
     set_default_env("DIALOG_GCD_RAW_IPMUL_CLEAR_P_RESIDUAL", "1");
     set_default_env("DIALOG_GCD_RAW_QUOTIENT_TERMINAL_REUSE", "1");
@@ -31257,24 +31422,17 @@ fn configure_ecdsafail_submission_route() {
     // 1,779,067 -> 1,778,555 (-512), peak-neutral at 1355q. The tighter
     // truncation re-rolls the Fiat-Shamir island; a 1-D reroll sweep (post_sub
     // fixed at the inherited 503292) lands a clean island at DIALOG_REROLL=101019.
-    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "711");
+    set_default_env("DIALOG_GCD_WIDTH_SLOPE_X1000", "950");
     // Active-395 island on the promoted 1355q base: validated 0/0/0 over all
     // 9024 shots at 1355q x 1,773,011 T.
     set_default_env("DIALOG_REROLL", "4269");
     set_default_env("DIALOG_POST_SUB_REROLL", "503292");
-    // Body-only late-band trim: shave one high carry bit from the materialized
-    // GCD add/sub body in the last half of the 393-step schedule while leaving
-    // comparator/cswap/shift active widths unchanged.
-    set_default_env(
-        "DIALOG_GCD_BODY_CARRY_BAND_TRIMS",
-        "0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1",
-    );
     // Fiat-Shamir island for ACTIVE_ITERATIONS=393 + WIDTH_MARGIN=25 (1350q base).
     // The fixed-length 96-op identity tail (see the DIALOG_TAIL_NONCE block in
     // build_builder) reseeds the 9024 Fiat-Shamir test inputs without changing
-    // the circuit action, Toffoli count, or peak qubits. nonce=26002 passed the
-    // one-nonce exact remote check for the body-only late-band trim screen.
-    set_default_env("DIALOG_TAIL_NONCE", "26002");
+    // the circuit action, Toffoli count, or peak qubits. nonce=385307 lands a
+    // clean island: validated 0/0/0 over all 9024 shots at 1350q x 1,763,987 T.
+    set_default_env("DIALOG_TAIL_NONCE", "124");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
     // separate cmp qubit and recomputing the comparator for uncompute. Pure
