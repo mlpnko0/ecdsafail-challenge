@@ -32736,7 +32736,7 @@ fn configure_ecdsafail_submission_route() {
     // exact-screen zone) so the on-GPU island finder lands a clean Fiat-Shamir
     // nonce; the fold-fusion's -25k Toffoli keeps the score well under 2B.
     set_default_env("DIALOG_GCD_COMPARE_BITS", "52");
-    set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "24");
+    set_default_env("DIALOG_GCD_APPLY_CLEAN_COMPARE_BITS", "23");
     set_default_env("DIALOG_GCD_RAW_PA", "1");
     set_default_env("DIALOG_GCD_K2", "1");
     // Both-phase apply fold-fusion (fused double_y + halve_y Solinas folds,
@@ -32971,7 +32971,7 @@ fn configure_ecdsafail_submission_route() {
     // 1000001157 lands a clean island, validated 0/0/0 over all 9024 shots at
     // 1313q x 1,535,885 T = 2,016,617,005 (official ecdsafail run).
     set_default_env("DIALOG_GCD_SELECTED_BODY_NOCIN", "1");
-    set_default_env("DIALOG_TAIL_NONCE", "172380");
+    set_default_env("DIALOG_TAIL_NONCE", "43950001112");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "2");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive
     // b0_and_b1 from the in-flight comparator carry instead of materializing a
