@@ -1274,8 +1274,9 @@ fn configure_ecdsafail_submission_route() {
     // trims average executed Toffoli to 1,456,963 at peak 1302 qubits.
     set_default_env("DIALOG_GCD_BODY_CARRY_BAND_TRIMS", "0,3,3,3,3,3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,3,3,3");
     set_default_env("DIALOG_GCD_TOBITVECTOR_CSWAP_BODY_TRIM", "0");
-    set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10,11");
+    set_default_env("DIALOG_GCD_BINDER_NOTCH_STEPS", "8,9,10");
     set_default_env("DIALOG_GCD_BINDER_NOTCH_EXTRA", "2");
+    set_default_env("DIALOG_GCD_BINDER_NOTCH_MAP", "13:1");
     set_default_env(
         "DIALOG_GCD_SPECIAL_OVERFLOW_CLEAN_STEP_BITS",
         "113:21,131:21,142:22,187:23,205:22,210:21",
@@ -1303,11 +1304,13 @@ fn configure_ecdsafail_submission_route() {
     set_default_env("ROUND84_INPLACE_SOLINAS_FOLD", "1");
     set_default_env("ROUND84_INPLACE_QUOTIENT_CARRY_TRUNC_W", "21");
     set_default_env("DIALOG_GCD_BORROW_CURRENT_S2", "1");
+    set_default_env("DIALOG_GCD_BORROW_ZERO_RAW_FUTURE", "1");
+    set_default_env("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT", "1");
     set_default_env("DIALOG_GCD_APPLY_BOUNDARY_SPLIT", "100");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT", "50");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT2", "100");
     set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT3", "150");
-    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT4", "189");
+    set_default_env("DIALOG_GCD_APPLY_CHUNKED_F_CUT4", "190");
     // WIDTH_SLOPE tightening: the per-step GCD width envelope shrink rate
     // (ideal = N - step*SLOPE + MARGIN) was left at the default 0.7075 by the
     // whole frontier lineage; only the constant MARGIN was ever tuned. The
@@ -1396,7 +1399,7 @@ fn configure_ecdsafail_submission_route() {
     // Fiat-Shamir island:
     // Binder-notch fallback 8,9: nonce 169924627 validates 0/0/0 over all
     // 9024 shots at 1300q x 1,454,884 T = 1,891,349,200.
-    set_default_env("DIALOG_TAIL_NONCE", "45892140");
+    set_default_env("DIALOG_TAIL_NONCE", "47863838");
     set_default_env("DIALOG_GCD_FOLD_MAJ2", "1");
     set_default_env("DIALOG_GCD_APPLY_FINAL_WINDOWED_FAST_BLOCKS", "0");
     // Fuse the branch-bit comparator with the b0-controlled log update: derive

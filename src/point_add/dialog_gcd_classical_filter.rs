@@ -21,6 +21,7 @@ const MAX_GCD_ITERS: usize = 402;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HardReason {
     WidthOverflow { step: usize },
+    BodyTrimMismatch { step: usize, active_width: usize, body_width: usize },
     ComparatorMismatch { step: usize },
     NonConvergence { steps_needed: usize },
 }
@@ -215,6 +216,21 @@ fn body_carry_extra_notch(step: usize) -> usize {
         }
     }
 
+    if let Ok(map) = std::env::var("DIALOG_GCD_BINDER_NOTCH_MAP") {
+        extra = extra.saturating_add(
+            map.split(',')
+                .filter_map(|entry| {
+                    let (s, e) = entry.trim().split_once(':')?;
+                    Some((
+                        s.trim().parse::<usize>().ok()?,
+                        e.trim().parse::<usize>().ok()?,
+                    ))
+                })
+                .filter_map(|(s, e)| (s == step).then_some(e))
+                .sum(),
+        );
+    }
+
     extra
 }
 
@@ -324,6 +340,31 @@ fn truncated_gcd_step(u: &mut U256, v: &mut U256, step: usize, cfg: &DialogGcdFi
 
     if b0 {
         let body_w = cfg.body_carry_trunc_width_fast(active_width, step);
+        let full_v = if cfg.odd_u_lowbit_fastpath {
+            let mut x = sub_low_window(*v, *u, active_width);
+            x ^= U256::from(1u64);
+            x
+        } else {
+            sub_low_window(*v, *u, active_width)
+        };
+        let trimmed_v = if cfg.odd_u_lowbit_fastpath {
+            let mut x = if body_w <= 1 {
+                *v
+            } else {
+                sub_low_window(*v, *u, body_w)
+            };
+            x ^= U256::from(1u64);
+            x
+        } else {
+            sub_low_window(*v, *u, body_w)
+        };
+        if (full_v & window_mask(active_width)) != (trimmed_v & window_mask(active_width)) {
+            return Some(HardReason::BodyTrimMismatch {
+                step,
+                active_width,
+                body_width: body_w,
+            });
+        }
         if cfg.odd_u_lowbit_fastpath {
             if body_w <= 1 {
                 *v ^= U256::from(1u64);

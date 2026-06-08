@@ -341,6 +341,19 @@ pub(crate) fn dialog_gcd_borrow_current_s2_enabled() -> bool {
         == Some("1")
 }
 
+pub(crate) fn dialog_gcd_borrow_zero_raw_future_enabled() -> bool {
+    // During a block-lifecycle tobitvector body, not every raw transcript cell is
+    // live yet. Forward pass: slots greater than the current slot are still |0>
+    // until their later branch/shift phases. Reverse pass: those greater slots
+    // have already been uncomputed back to |0> before this slot's reverse_add.
+    // Borrowing those cells as composite scratch is a pure retiming of clean
+    // storage: the measured add/sub body restores them before any future use.
+    std::env::var("DIALOG_GCD_BORROW_ZERO_RAW_FUTURE")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 pub(crate) struct DialogGcdCompositeScratch {
     lanes: Vec<QubitId>,
     owned: Vec<QubitId>,
@@ -447,6 +460,26 @@ pub(crate) fn dialog_gcd_build_composite_scratch(
             }
         }
     }
+    if dialog_gcd_borrow_zero_raw_future_enabled() && !raw_block.is_empty() {
+        let group_size = dialog_gcd_sidecar_group_size();
+        let slot = step % group_size;
+        let mut push_raw_zero = |q: QubitId| {
+            if lanes.len() < want
+                && !lanes.contains(&q)
+                && !u[..active_width].contains(&q)
+                && !v[..active_width].contains(&q)
+            {
+                lanes.push(q);
+            }
+        };
+        for future_slot in (slot + 1)..group_size {
+            push_raw_zero(raw_block[2 * future_slot]);
+            push_raw_zero(raw_block[2 * future_slot + 1]);
+            if dialog_gcd_k2_enabled() {
+                push_raw_zero(raw_block[2 * group_size + future_slot]);
+            }
+        }
+    }
     let owned = b.alloc_qubits(want - lanes.len());
     if std::env::var("PROBE_SCRATCH").is_ok() && active_width >= 254 {
         eprintln!(
@@ -456,7 +489,7 @@ pub(crate) fn dialog_gcd_build_composite_scratch(
             body_w,
             body_len,
             want,
-            lanes.len() - owned.len(),
+            lanes.len(),
             owned.len()
         );
     }
@@ -805,9 +838,20 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecyc
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_subtract");
             dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries, step);
+            if std::env::var("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                if let Some(scratch) = composite_scratch.as_ref() {
+                    b.free_vec(&scratch.owned);
+                }
+            }
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_shift");
-            dialog_gcd_shift_right_assuming_even(b, v_active);
+            let shift_width = dialog_gcd_tobitvector_shift_width(active_width, step);
+            let v_shift = &v[..shift_width];
+            dialog_gcd_shift_right_assuming_even(b, v_shift);
             if dialog_gcd_k2_enabled() {
                 // K=2: record shift2 = NOT v_active[0] (v still even after the
                 // first shift) into the sidecar, then conditionally shift v_active
@@ -819,13 +863,19 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecyc
                     b.cx(v0, s2);
                     b.x(s2);
                 }
-                for i in 0..v_active.len().saturating_sub(1) {
-                    let (lo, hi) = (v_active[i], v_active[i + 1]);
+                for i in 0..v_shift.len().saturating_sub(1) {
+                    let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
             }
-            if let Some(scratch) = composite_scratch {
-                b.free_vec(&scratch.owned);
+            if std::env::var("DIALOG_GCD_FREE_SCRATCH_BEFORE_SHIFT")
+                .ok()
+                .as_deref()
+                != Some("1")
+            {
+                if let Some(scratch) = composite_scratch.as_ref() {
+                    b.free_vec(&scratch.owned);
+                }
             }
         }
 
@@ -936,13 +986,15 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block
             let compare_bits = dialog_gcd_compare_bits_for_step(step, active_width);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_reverse_unshift");
+            let shift_width = dialog_gcd_tobitvector_shift_width(active_width, step);
+            let v_shift = &v[..shift_width];
             if dialog_gcd_k2_enabled() {
                 // mirror of forward K=2: conditional un-shift (reverse cswap order),
                 // then uncompute s2 back to |0> (v_active[0] is restored after the
                 // un-shift to the value s2 was derived from).
                 let s2 = raw_block[2 * dialog_gcd_sidecar_group_size() + slot];
-                for i in (0..v_active.len().saturating_sub(1)).rev() {
-                    let (lo, hi) = (v_active[i], v_active[i + 1]);
+                for i in (0..v_shift.len().saturating_sub(1)).rev() {
+                    let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
                 let v0 = v_active[0];
@@ -951,7 +1003,7 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block
                     b.cx(v0, s2);
                 }
             }
-            dialog_gcd_unshift_right_assuming_even(b, v_active);
+            dialog_gcd_unshift_right_assuming_even(b, v_shift);
 
             b.set_phase("dialog_gcd_compressed_block_tobitvector_reverse_add");
             let future = dialog_gcd_compressed_sidecar_future_carry_slice(
@@ -1257,7 +1309,8 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps(
         dialog_gcd_controlled_sub_selected(b, u_active, v_active, b0, borrowed_carries, step);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_shift");
-        dialog_gcd_shift_right_assuming_even(b, v_active);
+        let shift_width = dialog_gcd_tobitvector_shift_width(active_width, step);
+        dialog_gcd_shift_right_assuming_even(b, &v[..shift_width]);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_absorb_pair");
         let block = dialog_gcd_compressed_sidecar_block(compressed_log, step);
@@ -1304,7 +1357,8 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse(
         let compare_bits = dialog_gcd_compare_bits_for_step(step, active_width);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_reverse_unshift");
-        dialog_gcd_unshift_right_assuming_even(b, v_active);
+        let shift_width = dialog_gcd_tobitvector_shift_width(active_width, step);
+        dialog_gcd_unshift_right_assuming_even(b, &v[..shift_width]);
 
         b.set_phase("dialog_gcd_compressed_sidecar_tobitvector_reverse_add");
         let borrowed_carries =

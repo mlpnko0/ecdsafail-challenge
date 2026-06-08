@@ -220,6 +220,18 @@ pub(crate) fn dialog_gcd_tobitvector_cswap_width(active_width: usize, step: usiz
     }
 }
 
+pub(crate) fn dialog_gcd_tobitvector_shift_width(active_width: usize, step: usize) -> usize {
+    if std::env::var("DIALOG_GCD_TOBITVECTOR_SHIFT_BODY_TRIM")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        dialog_gcd_body_carry_trunc_width(active_width, step).min(active_width)
+    } else {
+        active_width
+    }
+}
+
 pub(crate) fn dialog_gcd_body_carry_trunc_width(active_width: usize, step: usize) -> usize {
     let mut w = dialog_gcd_body_carry_band_trim(step).unwrap_or_else(|| {
         std::env::var("DIALOG_GCD_BODY_CARRY_TRUNC_W")
@@ -244,6 +256,7 @@ pub(crate) fn dialog_gcd_body_carry_trunc_width(active_width: usize, step: usize
     if dialog_gcd_binder_notch_steps().contains(&step) {
         w = w.saturating_add(dialog_gcd_binder_notch_extra());
     }
+    w = w.saturating_add(dialog_gcd_binder_notch_map_extra(step));
     active_width.saturating_sub(w).max(2)
 }
 
@@ -263,6 +276,22 @@ pub(crate) fn dialog_gcd_binder_notch_extra() -> usize {
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(2)
+}
+
+pub(crate) fn dialog_gcd_binder_notch_map_extra(step: usize) -> usize {
+    let Ok(map) = std::env::var("DIALOG_GCD_BINDER_NOTCH_MAP") else {
+        return 0;
+    };
+    map.split(',')
+        .filter_map(|entry| {
+            let (s, extra) = entry.trim().split_once(':')?;
+            Some((
+                s.trim().parse::<usize>().ok()?,
+                extra.trim().parse::<usize>().ok()?,
+            ))
+        })
+        .filter_map(|(s, extra)| (s == step).then_some(extra))
+        .sum()
 }
 
 pub(crate) fn dialog_gcd_trio_width_notch_enabled() -> bool {
