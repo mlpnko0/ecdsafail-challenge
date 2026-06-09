@@ -341,6 +341,61 @@ pub(crate) fn dialog_gcd_borrow_current_s2_enabled() -> bool {
         == Some("1")
 }
 
+pub(crate) fn dialog_gcd_skip_zero_edge_cshift_enabled() -> bool {
+    std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_tobit_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_tobit_fwd_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_tobit_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_FWD_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_tobit_rev_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_tobit_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_TOBIT_REV_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_apply_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_apply_double_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_apply_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_DOUBLE_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
+pub(crate) fn dialog_gcd_skip_zero_edge_apply_halve_cshift_enabled() -> bool {
+    dialog_gcd_skip_zero_edge_apply_cshift_enabled()
+        || std::env::var("DIALOG_GCD_SKIP_ZERO_EDGE_APPLY_HALVE_CSHIFT")
+            .ok()
+            .as_deref()
+            == Some("1")
+}
+
 pub(crate) fn dialog_gcd_borrow_zero_raw_future_enabled() -> bool {
     // During a block-lifecycle tobitvector body, not every raw transcript cell is
     // live yet. Forward pass: slots greater than the current slot are still |0>
@@ -871,7 +926,11 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_block_lifecyc
                     b.cx(v0, s2);
                     b.x(s2);
                 }
-                for i in 0..v_shift.len().saturating_sub(1) {
+                let pairs = v_shift.len().saturating_sub(1);
+                for i in 0..pairs {
+                    if dialog_gcd_skip_zero_edge_tobit_fwd_cshift_enabled() && i + 1 == pairs {
+                        continue;
+                    }
                     let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
@@ -1001,7 +1060,11 @@ pub(crate) fn emit_dialog_gcd_compressed_sidecar_tobitvector_steps_reverse_block
                 // then uncompute s2 back to |0> (v_active[0] is restored after the
                 // un-shift to the value s2 was derived from).
                 let s2 = raw_block[2 * dialog_gcd_sidecar_group_size() + slot];
-                for i in (0..v_shift.len().saturating_sub(1)).rev() {
+                let pairs = v_shift.len().saturating_sub(1);
+                for i in (0..pairs).rev() {
+                    if dialog_gcd_skip_zero_edge_tobit_rev_cshift_enabled() && i + 1 == pairs {
+                        continue;
+                    }
                     let (lo, hi) = (v_shift[i], v_shift[i + 1]);
                     cswap(b, s2, lo, hi);
                 }
@@ -2165,6 +2228,9 @@ pub(crate) fn dialog_gcd_fused_double_y(b: &mut B, y: &[QubitId], p: U256, s2: Q
     let ovf2 = b.alloc_qubit();
     cswap(b, s2, y[n - 1], ovf2);
     for i in (0..n - 1).rev() {
+        if dialog_gcd_skip_zero_edge_apply_double_cshift_enabled() && i == 0 {
+            continue;
+        }
         cswap(b, s2, y[i], y[i + 1]);
     }
 
@@ -2383,6 +2449,9 @@ pub(crate) fn dialog_gcd_fused_halve_y(b: &mut B, y: &[QubitId], p: U256, s2: Qu
 
     // ── un-cond-shift2 (right shift gated by s2), re-inserting ovf2 at top ──
     for i in 0..n - 1 {
+        if dialog_gcd_skip_zero_edge_apply_halve_cshift_enabled() && i == 0 {
+            continue;
+        }
         cswap(b, s2, y[i], y[i + 1]);
     }
     cswap(b, s2, y[n - 1], ovf2);
