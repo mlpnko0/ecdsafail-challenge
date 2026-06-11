@@ -510,6 +510,19 @@ pub(crate) fn fold_maj2_enabled() -> bool {
     std::env::var("DIALOG_GCD_FOLD_MAJ2").ok().as_deref() == Some("1")
 }
 
+fn borrowed_const_fold_carries(
+    b: &mut B,
+    need: usize,
+    borrowed: &[QubitId],
+) -> (Vec<QubitId>, Vec<QubitId>) {
+    let borrowed_len = borrowed.len().min(need);
+    let owned = b.alloc_qubits(need - borrowed_len);
+    let mut carries = Vec::with_capacity(need);
+    carries.extend_from_slice(&borrowed[..borrowed_len]);
+    carries.extend_from_slice(&owned);
+    (carries, owned)
+}
+
 /// Carry-tail-truncated controlled add of a sparse classical constant.
 ///
 /// Identical arithmetic to [`cadd_nbit_const_direct_fast`] except the forward
@@ -529,6 +542,17 @@ pub(crate) fn cadd_nbit_const_direct_trunc_fast(
     ctrl: QubitId,
     window: usize,
 ) {
+    cadd_nbit_const_direct_trunc_fast_borrowed_carries(b, acc, c, ctrl, window, &[]);
+}
+
+pub(crate) fn cadd_nbit_const_direct_trunc_fast_borrowed_carries(
+    b: &mut B,
+    acc: &[QubitId],
+    c: U256,
+    ctrl: QubitId,
+    window: usize,
+    borrowed_carries: &[QubitId],
+) {
     let n = acc.len();
     if n == 0 {
         return;
@@ -543,7 +567,7 @@ pub(crate) fn cadd_nbit_const_direct_trunc_fast(
     let hi = highest_set_bit(c);
     let last = core::cmp::min(n - 2, hi.saturating_add(window));
     let maj2 = fold_maj2_enabled();
-    let carries = b.alloc_qubits(last + 1);
+    let (carries, owned_carries) = borrowed_const_fold_carries(b, last + 1, borrowed_carries);
 
     // Forward carry sweep, truncated at `last`. carry_{i+1} = maj(acc_i, k_i, carry_i).
     for i in 0..=last {
@@ -593,7 +617,7 @@ pub(crate) fn cadd_nbit_const_direct_trunc_fast(
         }
     }
 
-    b.free_vec(&carries);
+    b.free_vec(&owned_carries);
 }
 
 /// Carry-tail-truncated controlled subtract of a sparse classical constant.
@@ -606,6 +630,17 @@ pub(crate) fn csub_nbit_const_direct_trunc_fast(
     c: U256,
     ctrl: QubitId,
     window: usize,
+) {
+    csub_nbit_const_direct_trunc_fast_borrowed_carries(b, acc, c, ctrl, window, &[]);
+}
+
+pub(crate) fn csub_nbit_const_direct_trunc_fast_borrowed_carries(
+    b: &mut B,
+    acc: &[QubitId],
+    c: U256,
+    ctrl: QubitId,
+    window: usize,
+    borrowed_carries: &[QubitId],
 ) {
     let n = acc.len();
     if n == 0 {
@@ -621,7 +656,7 @@ pub(crate) fn csub_nbit_const_direct_trunc_fast(
     let hi = highest_set_bit(c);
     let last = core::cmp::min(n - 2, hi.saturating_add(window));
     let maj2 = fold_maj2_enabled();
-    let borrows = b.alloc_qubits(last + 1);
+    let (borrows, owned_borrows) = borrowed_const_fold_carries(b, last + 1, borrowed_carries);
 
     // Forward borrow sweep, truncated at `last`.
     for i in 0..=last {
@@ -670,7 +705,7 @@ pub(crate) fn csub_nbit_const_direct_trunc_fast(
         }
     }
 
-    b.free_vec(&borrows);
+    b.free_vec(&owned_borrows);
 }
 
 

@@ -1729,7 +1729,19 @@ pub(crate) fn dialog_gcd_cmod_add_materialized_pseudomersenne_chunked(
 
     b.set_phase("dialog_gcd_materialized_special_overflow_fold");
     if let Some(w) = fold_carry_trunc_window() {
-        cadd_nbit_const_direct_trunc_fast(b, &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS], c, acc_ovf, w);
+        let borrowed_carries = if std::env::var("DIALOG_GCD_SPECIAL_FOLD_BORROW_CARRIES").ok().as_deref() == Some("1") {
+            inner_scratch
+        } else {
+            &[]
+        };
+        cadd_nbit_const_direct_trunc_fast_borrowed_carries(
+            b,
+            &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS],
+            c,
+            acc_ovf,
+            w,
+            borrowed_carries,
+        );
     } else {
         cadd_nbit_const_fast(b, &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS], c, acc_ovf);
     }
@@ -1789,7 +1801,19 @@ pub(crate) fn dialog_gcd_cmod_sub_materialized_pseudomersenne_chunked(
 
     b.set_phase("dialog_gcd_materialized_special_underflow_fold");
     if let Some(w) = fold_carry_trunc_window() {
-        csub_nbit_const_direct_trunc_fast(b, &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS], c, acc_ovf, w);
+        let borrowed_carries = if std::env::var("DIALOG_GCD_SPECIAL_FOLD_BORROW_CARRIES").ok().as_deref() == Some("1") {
+            inner_scratch
+        } else {
+            &[]
+        };
+        csub_nbit_const_direct_trunc_fast_borrowed_carries(
+            b,
+            &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS],
+            c,
+            acc_ovf,
+            w,
+            borrowed_carries,
+        );
     } else {
         csub_nbit_const_fast(b, &acc[..DIALOG_GCD_SPECIAL_ADD_LSBS], c, acc_ovf);
     }
