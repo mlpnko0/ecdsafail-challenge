@@ -616,6 +616,13 @@ fn square_row_window_clean_compare_bits() -> usize {
         .unwrap_or(0)
 }
 
+fn square_row_window_measured_carry_clear_enabled() -> bool {
+    std::env::var("SQUARE_ROW_WINDOW_MEASURED_CARRY_CLEAR")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
 /// Set row bit `j` of square row `i` into `t`. Bit 0 = x_i (diagonal low),
 /// bit 1 = 0 (gap), bit 2+k = x_i & x_{i+1+k} (doubled cross term).
 fn square_row_bit_set(b: &mut B, x: &[QubitId], i: usize, j: usize, t: QubitId) {
@@ -764,6 +771,7 @@ fn square_row_windowed_apply(
     // comparator (~2n CCX, also peak-flat) for cross-checking.
     let slow_cmp = std::env::var("SQUARE_ROW_WINDOW_SLOW_CMP").ok().as_deref() == Some("1");
     let clean_cmp_bits = square_row_window_clean_compare_bits();
+    let measured_clear = square_row_window_measured_carry_clear_enabled();
     for &(cout, lo, hi, cin) in couts.iter().rev() {
         let seg_w = hi - lo;
         let trunc_w = if clean_cmp_bits == 0 {
@@ -777,26 +785,52 @@ fn square_row_windowed_apply(
             let carries = tmp_ext[row_top..row_top + trunc_w].to_vec();
             let cmp_cin = b.alloc_qubit();
             if forward {
-                cmp_lt_into_fast_with_cin_borrowed_carries(
-                    b,
-                    &tmp_ext[base + suffix_lo..base + hi],
-                    &seg,
-                    cmp_cin,
-                    cout,
-                    &carries,
-                );
+                if measured_clear {
+                    let phase = b.alloc_bit();
+                    b.hmr(cout, phase);
+                    cmp_lt_phase_conditioned_with_cin_borrowed_carries(
+                        b,
+                        &tmp_ext[base + suffix_lo..base + hi],
+                        &seg,
+                        cmp_cin,
+                        &carries,
+                        phase,
+                    );
+                } else {
+                    cmp_lt_into_fast_with_cin_borrowed_carries(
+                        b,
+                        &tmp_ext[base + suffix_lo..base + hi],
+                        &seg,
+                        cmp_cin,
+                        cout,
+                        &carries,
+                    );
+                }
             } else {
                 for &q in &seg {
                     b.x(q);
                 }
-                cmp_lt_into_fast_with_cin_borrowed_carries(
-                    b,
-                    &seg,
-                    &tmp_ext[base + suffix_lo..base + hi],
-                    cmp_cin,
-                    cout,
-                    &carries,
-                );
+                if measured_clear {
+                    let phase = b.alloc_bit();
+                    b.hmr(cout, phase);
+                    cmp_lt_phase_conditioned_with_cin_borrowed_carries(
+                        b,
+                        &seg,
+                        &tmp_ext[base + suffix_lo..base + hi],
+                        cmp_cin,
+                        &carries,
+                        phase,
+                    );
+                } else {
+                    cmp_lt_into_fast_with_cin_borrowed_carries(
+                        b,
+                        &seg,
+                        &tmp_ext[base + suffix_lo..base + hi],
+                        cmp_cin,
+                        cout,
+                        &carries,
+                    );
+                }
                 for &q in &seg {
                     b.x(q);
                 }
@@ -808,7 +842,18 @@ fn square_row_windowed_apply(
             let carries = tmp_ext[row_top..row_top + seg_w].to_vec();
             if forward {
                 // carry_out = (partial_sum < seg + cin)
-                if slow_cmp {
+                if measured_clear {
+                    let phase = b.alloc_bit();
+                    b.hmr(cout, phase);
+                    cmp_lt_phase_conditioned_with_cin_borrowed_carries(
+                        b,
+                        &tmp_ext[base + lo..base + hi],
+                        &seg,
+                        cin,
+                        &carries,
+                        phase,
+                    );
+                } else if slow_cmp {
                     cmp_lt_into_with_cin_slow(b, &tmp_ext[base + lo..base + hi], &seg, cin, cout);
                 } else {
                     cmp_lt_into_fast_with_cin_borrowed_carries(
@@ -820,7 +865,18 @@ fn square_row_windowed_apply(
                 for k in 0..seg_w {
                     b.x(seg[k]);
                 }
-                if slow_cmp {
+                if measured_clear {
+                    let phase = b.alloc_bit();
+                    b.hmr(cout, phase);
+                    cmp_lt_phase_conditioned_with_cin_borrowed_carries(
+                        b,
+                        &seg,
+                        &tmp_ext[base + lo..base + hi],
+                        cin,
+                        &carries,
+                        phase,
+                    );
+                } else if slow_cmp {
                     cmp_lt_into_with_cin_slow(b, &seg, &tmp_ext[base + lo..base + hi], cin, cout);
                 } else {
                     cmp_lt_into_fast_with_cin_borrowed_carries(

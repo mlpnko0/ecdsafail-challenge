@@ -1007,10 +1007,11 @@ fn set_default_env(name: &str, value: &str) {
 fn configure_ecdsafail_submission_route() {
     set_default_env("SKIP_ALT_SEED_CHECKS", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_SIDECAR_LOG", "1");
-    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "18");
+    set_default_env("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS", "22");
+    set_default_env("SQUARE_ROW_WINDOW_MEASURED_CARRY_CLEAR", "1");
     set_default_env("ROUND84_KEEP_QUOTIENT_PRODUCT", "1");
     set_default_env("DIALOG_GCD_FOLD_CARRY_TRUNC_W", "19");
-    set_default_env("DIALOG_TAIL_NONCE", "402004742830");
+    set_default_env("DIALOG_TAIL_NONCE", "4836419");
     set_default_env("DIALOG_GCD_SKIP_ZERO_EDGE_CSHIFT", "1");
     set_default_env("DIALOG_GCD_COMPRESSED_BLOCK_LIFECYCLE", "1");
     set_default_env("DIALOG_GCD_HOST_REVERSE_RAW_BLOCK", "1");

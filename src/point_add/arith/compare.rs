@@ -401,6 +401,35 @@ pub(crate) fn cmp_lt_phase_conditioned_borrowed_carries(
     b.pop_condition();
 }
 
+/// Apply the HMR phase correction for `u < v + c_in` without an additional
+/// quantum control. The nonlinear comparator replay executes only when the
+/// classical HMR result is one.
+pub(crate) fn cmp_lt_phase_conditioned_with_cin_borrowed_carries(
+    b: &mut B,
+    u: &[QubitId],
+    v: &[QubitId],
+    c_in: QubitId,
+    carries: &[QubitId],
+    phase: BitId,
+) {
+    let n = u.len();
+    assert_eq!(v.len(), n);
+    assert!(n > 0);
+    assert!(carries.len() >= n);
+
+    b.push_condition(phase);
+    for &q in u {
+        b.x(q);
+    }
+    cmp_lt_fast_prefix_window_forward(b, u, v, c_in, carries, c_in, &[]);
+    b.cz(u[n - 1], u[n - 1]);
+    cmp_lt_fast_prefix_window_inverse(b, u, v, c_in, carries);
+    for &q in u {
+        b.x(q);
+    }
+    b.pop_condition();
+}
+
 pub(crate) fn cmp_lt_phase_conditioned(
     b: &mut B,
     u: &[QubitId],
