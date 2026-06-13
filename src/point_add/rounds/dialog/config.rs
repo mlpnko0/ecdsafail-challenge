@@ -75,6 +75,22 @@ pub(crate) fn dialog_gcd_apply_chunked_f_blocks() -> Option<usize> {
         .filter(|&blocks| blocks >= 2)
 }
 
+pub(crate) fn dialog_gcd_apply_chunked_f_cuts() -> Option<Vec<usize>> {
+    std::env::var("DIALOG_GCD_APPLY_CHUNKED_F_CUTS")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(|item| {
+                    item.trim()
+                        .parse::<usize>()
+                        .expect("DIALOG_GCD_APPLY_CHUNKED_F_CUTS")
+                })
+                .collect()
+        })
+}
+
 pub(crate) fn dialog_gcd_apply_chunked_f_cut() -> Option<usize> {
     std::env::var("DIALOG_GCD_APPLY_CHUNKED_F_CUT")
         .ok()
@@ -129,6 +145,20 @@ pub(crate) fn dialog_gcd_apply_chunked_f_fuse_boundary_clears_enabled() -> bool 
         .ok()
         .as_deref()
         != Some("0")
+}
+
+pub(crate) fn dialog_gcd_apply_borrow_future_boundary_carries_enabled() -> bool {
+    std::env::var("DIALOG_GCD_APPLY_BORROW_FUTURE_BOUNDARY_CARRIES")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+pub(crate) fn dialog_gcd_apply_implicit_high_zero_enabled() -> bool {
+    std::env::var("DIALOG_GCD_APPLY_IMPLICIT_HIGH_ZERO")
+        .ok()
+        .as_deref()
+        == Some("1")
 }
 
 pub(crate) fn dialog_gcd_apply_final_lowq_enabled() -> bool {

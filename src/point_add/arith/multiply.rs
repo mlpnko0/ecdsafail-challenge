@@ -609,28 +609,60 @@ fn square_row_max_seg() -> usize {
 /// compares only the high suffix of the segment and final partial sum.  This is
 /// a deliberate island-hunt knob: it keeps the same low peak and saves Toffoli,
 /// but wrong suffix ties leave the boundary carry dirty.
-fn square_row_window_clean_compare_bits(row: usize) -> usize {
+fn square_cleanup_direction(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "f" | "forward" | "false" | "0" => Some(false),
+        "r" | "reverse" | "true" | "1" => Some(true),
+        _ => None,
+    }
+}
+
+fn square_row_window_clean_compare_bits(
+    row: usize,
+    window: usize,
+    reverse: bool,
+) -> usize {
     let default_bits = std::env::var("SQUARE_ROW_WINDOW_CLEAN_COMPARE_BITS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0);
-    let Ok(spec) = std::env::var("SQUARE_ROW_WINDOW_CLEAN_ROW_BITS") else {
-        return default_bits;
+    let row_bits = std::env::var("SQUARE_ROW_WINDOW_CLEAN_ROW_BITS")
+        .ok()
+        .and_then(|spec| {
+            spec.split(',').rev().find_map(|item| {
+                let (raw_row, raw_bits) = item.trim().split_once(':')?;
+                if raw_row.trim().parse::<usize>().ok()? != row {
+                    return None;
+                }
+                raw_bits
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|bits| (1..=N).contains(bits))
+            })
+        })
+        .unwrap_or(default_bits);
+    let Ok(spec) = std::env::var("SQUARE_ROW_WINDOW_CLEAN_SITE_BITS") else {
+        return row_bits;
     };
-    for item in spec.split(',') {
-        let Some((raw_row, raw_bits)) = item.trim().split_once(':') else {
-            continue;
-        };
-        if raw_row.trim().parse::<usize>().ok() != Some(row) {
+    for item in spec.split(',').rev() {
+        let fields: Vec<_> = item.trim().split(':').map(str::trim).collect();
+        if fields.len() != 4 {
             continue;
         }
-        if let Ok(bits) = raw_bits.trim().parse::<usize>() {
+        if fields[0].parse::<usize>().ok() != Some(row)
+            || fields[1].parse::<usize>().ok() != Some(window)
+            || square_cleanup_direction(fields[2]) != Some(reverse)
+        {
+            continue;
+        }
+        if let Ok(bits) = fields[3].parse::<usize>() {
             if (1..=N).contains(&bits) {
                 return bits;
             }
         }
     }
-    default_bits
+    row_bits
 }
 
 fn square_row_window_measured_carry_clear_enabled() -> bool {
@@ -748,7 +780,7 @@ fn square_row_windowed_apply(
     // carry/borrow-in for window 0 is a clean zero.
     let mut carry_in = b.alloc_qubit();
     let first_carry = carry_in;
-    let mut couts: Vec<(QubitId, usize, usize, QubitId)> = Vec::new();
+    let mut couts: Vec<(QubitId, usize, usize, QubitId, usize)> = Vec::new();
     for (wi, &(lo, hi)) in bounds.iter().enumerate() {
         let last = wi == nwin - 1;
         let seg = build_seg(b, lo, hi);
@@ -776,7 +808,7 @@ fn square_row_windowed_apply(
         if last {
             // nothing extra: carry already in tmp_ext[base+width].
         } else {
-            couts.push((high, lo, hi, carry_in));
+            couts.push((high, lo, hi, carry_in, wi));
             carry_in = high;
         }
         clear_seg(b, lo, &seg);
@@ -787,9 +819,10 @@ fn square_row_windowed_apply(
     // SQUARE_ROW_WINDOW_SLOW_CMP=1 falls back to the carry-array-free slow
     // comparator (~2n CCX, also peak-flat) for cross-checking.
     let slow_cmp = std::env::var("SQUARE_ROW_WINDOW_SLOW_CMP").ok().as_deref() == Some("1");
-    let clean_cmp_bits = square_row_window_clean_compare_bits(i);
     let measured_clear = square_row_window_measured_carry_clear_enabled();
-    for &(cout, lo, hi, cin) in couts.iter().rev() {
+    for &(cout, lo, hi, cin, window) in couts.iter().rev() {
+        let clean_cmp_bits =
+            square_row_window_clean_compare_bits(i, window, !forward);
         let seg_w = hi - lo;
         let trunc_w = if clean_cmp_bits == 0 {
             seg_w
